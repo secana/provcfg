@@ -1,0 +1,5 @@
+error: unknown #[configurable(...)] key; expected one of nested, secret, env_list, skip, rename
+ --> tests/ui/configurable_unknown_key.rs:5:20
+  |
+5 |     #[configurable(renmae = "HOST")]
+  |                    ^^^^^^

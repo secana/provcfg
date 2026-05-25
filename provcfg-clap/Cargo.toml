@@ -1,0 +1,18 @@
+[package]
+name = "provcfg-clap"
+description = "Clap integration for the provcfg configuration library."
+documentation = "https://docs.rs/provcfg-clap"
+keywords = ["config", "provenance", "clap", "cli"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+clap = { version = "4", features = ["derive", "string"] }
+provcfg-clap-macros = { path = "../provcfg-clap-macros", version = "0.1.0" }
+
+[dev-dependencies]
+provcfg = { path = "..", version = "0.1.0", features = ["cli"] }
+serde = { version = "1", features = ["derive"] }

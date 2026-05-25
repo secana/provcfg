@@ -1,0 +1,58 @@
+[workspace]
+members = ["provcfg-macros", "provcfg-clap", "provcfg-clap-macros"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/secana/provcfg"
+authors = ["Stefan Hausotte"]
+
+[package]
+name = "provcfg"
+description = "Configuration library that keeps track of the origin and history of all config values."
+documentation = "https://docs.rs/provcfg"
+keywords = ["config", "provenance", "settings"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Build docs.rs with every feature on so the rendered page shows the gated
+# `add_*_file` / `add_*_str` helpers and the `clap-derive` re-export.
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+provcfg-macros = { path = "provcfg-macros", version = "0.1.0" }
+provcfg-clap = { path = "provcfg-clap", version = "0.1.0", optional = true }
+serde = { version = "1", features = ["derive"] }
+erased-serde = "0.4"
+thiserror = "2"
+
+# Concrete deserializers
+serde_json = { version = "1.0", optional = true }
+toml = { version = "0.9", optional = true }
+
+[features]
+# Only `env` is on by default. `json`, `toml` and `cli` pull extra parsing
+# crates, so callers opt into the formats they actually use.
+default = ["env"]
+json = ["dep:serde_json"]
+toml = ["dep:toml"]
+env = ["dep:serde_json"] # Reuses serde_json internally to interpret values.
+cli = ["dep:serde_json"] # Reuses serde_json to round-trip partials produced by clap & friends.
+# `clap-derive` opt-in pulls in `provcfg-clap`, which re-exports the
+# `ClapArgs` derive macro. Disabled by default to keep `clap` out of the
+# dependency graph for users who roll their own CLI.
+clap-derive = ["dep:provcfg-clap"]
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3"
+trybuild = "1"
+clap = { version = "4", features = ["derive"] }
+provcfg-clap = { path = "provcfg-clap", version = "0.1.0" }

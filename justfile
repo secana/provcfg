@@ -24,11 +24,11 @@ build-release:
 	cargo build --release
 
 test:
-	cargo nextest run --workspace
+	cargo nextest run --workspace --all-features
 
 test-docs:
-  cargo doc --no-deps --document-private-items
-  cargo test --doc
+  cargo doc --no-deps --document-private-items --all-features
+  cargo test --workspace --all-features --doc
 
 clean:
 	cargo clean
@@ -39,7 +39,7 @@ fmt:
     set -euo pipefail
     if (rustup toolchain list | grep nightly && rustup component list --toolchain nightly | grep rustfmt) &> /dev/null; then
         echo 'Reformatting Rust code using nightly Rust fmt to sort imports'
-        cargo +nightly fmt --all -- --config imports_granularity=Module,group_imports=StdExternalCrate
+        rustup run nightly cargo fmt --all -- --config imports_granularity=Module,group_imports=StdExternalCrate
     else
         echo 'Reformatting Rust with the stable cargo fmt.  Install nightly with `rustup install nightly` for better results'
         cargo fmt --all
@@ -61,7 +61,6 @@ ci-fmt-check:
 
 alias b := build
 alias br := build-release
-alias r := run
 alias t := test
 alias td := test-docs
 alias c := check

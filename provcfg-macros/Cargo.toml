@@ -1,0 +1,18 @@
+[package]
+name = "provcfg-macros"
+description = "Derive macros for the provcfg configuration library."
+documentation = "https://docs.rs/provcfg-macros"
+keywords = ["config", "provenance", "derive", "macro"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2.0", features = ["full"] }
+quote = "1.0"
+proc-macro2 = "1.0"

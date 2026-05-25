@@ -1,0 +1,771 @@
+//! A Rust config loader that tracks where each value came from.
+//!
+//! `provcfg` layers configuration sources (compiled-in defaults, files,
+//! environment variables, CLI flags) into one struct, and keeps the
+//! *provenance* of every leaf field: which source set the active value, and
+//! which earlier sources it overrode.
+//!
+//! Derive [`Configurable`] on a plain config struct. [`Config::build`] returns
+//! a companion `*Prov` struct whose every leaf is a [`ValueHistory`]: the value
+//! paired with the [`Source`] it came from.
+//!
+//! ```
+//! use provcfg::{Category, Config, Configurable};
+//!
+//! #[derive(Configurable, serde::Deserialize, Clone, Default)]
+//! struct Settings {
+//!     host: String,
+//!     port: u16,
+//! }
+//!
+//! # unsafe { std::env::set_var("APP_HOST", "db.internal"); }
+//! // The environment has `APP_HOST=db.internal` set, but no `APP_PORT`.
+//! let settings = Config::new()
+//!     .add_env("APP")
+//!     .build::<SettingsProv>()
+//!     .unwrap();
+//!
+//! // `host` was set by the environment source.
+//! assert_eq!(settings.host.value(), "db.internal");
+//! assert_eq!(settings.host.source().category(), Category::Env);
+//!
+//! // `port` was set by nobody, so it falls back to the compiled-in default.
+//! assert_eq!(settings.port.value(), &0);
+//! assert_eq!(settings.port.source().category(), Category::Default);
+//! ```
+//!
+//! # When this crate is useful
+//!
+//! Use `provcfg` when you need to know which source set each value: rendering a
+//! settings page that labels fields by origin, or debugging a value's history
+//! across layered sources. For plain merged-config loading,
+//! [`config`](https://crates.io/crates/config) is the standard choice and less
+//! ceremony.
+
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
+
+pub mod sources;
+
+/// Re-export so generated code can reference `provcfg::erased_serde::*`
+/// without users needing a direct dependency.
+pub use erased_serde;
+/// Re-export of the `ClapArgs` derive from the optional `provcfg-clap`
+/// integration. Enabled via the `clap-derive` feature.
+#[cfg(feature = "clap-derive")]
+pub use provcfg_clap::ClapArgs;
+/// Derive macro that turns a plain config struct into a provenance-tracking one.
+///
+/// Deriving `Configurable` on a struct `Foo` generates:
+///
+/// - **`FooProv`**: `Foo`'s shape with every leaf wrapped in a [`ValueHistory`].
+///   This is what [`Config::build`] returns.
+/// - **`FooPartial`**: every leaf wrapped in `Option`, used while merging the
+///   contribution of each source.
+/// - **`From<&FooProv> for Foo`**: collapses a `*Prov` back to the plain struct,
+///   dropping the per-leaf history and keeping each leaf's active value.
+///
+/// The struct must also derive [`Clone`], [`Default`] and [`serde::Deserialize`].
+///
+/// # Field attributes
+///
+/// - `#[configurable(nested)]`: recurse into a sub-struct that also derives
+///   `Configurable`, tracking provenance per leaf instead of per sub-struct.
+/// - `#[configurable(secret)]`: flag a leaf as sensitive; see
+///   [`ValueHistory::is_secret`].
+/// - `#[configurable(rename = "NAME")]`: change the key looked up in sources.
+///   The name is preserved verbatim for file formats (TOML/JSON keys match
+///   exactly) and a lowercase alias is emitted so env vars still match (env
+///   var segments are always lowercased internally).
+/// - `#[configurable(env_list)]`: let a `Vec<String>` leaf accept a
+///   comma-separated string (see [`deserialize_env_list`]).
+/// - `#[configurable(skip)]`: keep the field on the struct but exclude it from
+///   the config machinery entirely.
+///
+/// ```
+/// use provcfg::{Config, Configurable};
+///
+/// #[derive(Configurable, serde::Deserialize, Clone, Default)]
+/// struct Database {
+///     host: String,
+///     #[configurable(secret)]
+///     password: String,
+/// }
+///
+/// // With no sources every leaf falls back to its `Default`.
+/// let db = Config::new().build::<DatabaseProv>().unwrap();
+///
+/// assert_eq!(db.host.value(), "");
+/// assert!(db.password.is_secret());
+///
+/// // The `*Prov` can collapse back to the plain struct.
+/// let plain: Database = (&db).into();
+/// assert_eq!(plain.host, "");
+/// ```
+pub use provcfg_macros::Configurable;
+
+/// Shared, thread-safe handle to a [`Source`], stored throughout the
+/// value-history graph.
+pub type SourceArc = Arc<dyn Source + Send + Sync>;
+
+/// Implemented by every generated `*Prov` struct.
+///
+/// You normally interact with it through [`Config::build`] and the inspection
+/// helpers [`sources_map`](Provenance::sources_map) and
+/// [`walk_leaves`](Provenance::walk_leaves). `#[derive(Configurable)]` writes
+/// the implementation, so you rarely implement or call the trait directly.
+pub trait Provenance: Sized {
+    /// The generated `*Partial` companion: every leaf wrapped in `Option`.
+    type Partial: serde::de::DeserializeOwned;
+
+    /// Build the all-`Some` partial that seeds the implicit defaults layer.
+    ///
+    /// Generated by the derive macro; not called directly.
+    #[doc(hidden)]
+    fn defaults_partial() -> Self::Partial;
+
+    /// Merge one partial per source (plus the internal defaults layer) into a
+    /// fully-populated `*Prov` value.
+    ///
+    /// `partials[i] == None` means source `i` did not contribute to this
+    /// subtree. Generated by the derive macro; not called directly.
+    #[doc(hidden)]
+    fn merge(sources: &[SourceArc], partials: Vec<Option<Self::Partial>>) -> Self;
+
+    /// Recursively visit every leaf, inserting `(dotted_path, Category)` into
+    /// `out`. [`sources_map`](Self::sources_map) is the convenient wrapper.
+    ///
+    /// Generated by the derive macro; call [`sources_map`](Self::sources_map)
+    /// instead.
+    #[doc(hidden)]
+    fn collect_sources(&self, prefix: &str, out: &mut HashMap<String, Category>);
+
+    /// Recursively visit every leaf with its dotted path, current value, the
+    /// [`Category`] of the source that set it, and whether the leaf is marked
+    /// secret (via `#[configurable(secret)]`). Consumers that render values
+    /// should redact when `is_secret` is `true`.
+    ///
+    /// The value is type-erased so it can be re-serialized through any serde
+    /// format. Nested fields recurse with an extended `prefix`.
+    ///
+    /// ```
+    /// use provcfg::{Category, Config, Configurable, Provenance};
+    /// use provcfg::erased_serde::Serialize;
+    ///
+    /// # #[derive(Configurable, serde::Deserialize, Clone, Default)]
+    /// # struct Settings { host: String, port: u16 }
+    /// # unsafe { std::env::set_var("WALK_HOST", "h"); }
+    /// let settings = Config::new().add_env("WALK").build::<SettingsProv>().unwrap();
+    ///
+    /// let mut leaves: Vec<(String, Category)> = Vec::new();
+    /// settings.walk_leaves("", &mut |path: &str, _value: &dyn Serialize, category: Category, _secret: bool| {
+    ///     leaves.push((path.to_string(), category));
+    /// });
+    /// leaves.sort_by(|a, b| a.0.cmp(&b.0));
+    ///
+    /// assert_eq!(leaves, [
+    ///     ("host".to_string(), Category::Env),
+    ///     ("port".to_string(), Category::Default),
+    /// ]);
+    /// ```
+    fn walk_leaves(
+        &self,
+        prefix: &str,
+        visitor: &mut dyn FnMut(&str, &dyn erased_serde::Serialize, Category, bool),
+    );
+
+    /// Flat `dotted.path -> Category` map of every leaf's active source.
+    ///
+    /// ```
+    /// # use provcfg::{Category, Config, Configurable, Provenance};
+    /// # #[derive(Configurable, serde::Deserialize, Clone, Default)]
+    /// # struct Settings { host: String, port: u16 }
+    /// # unsafe { std::env::set_var("SMAP_HOST", "h"); }
+    /// let settings = Config::new().add_env("SMAP").build::<SettingsProv>().unwrap();
+    ///
+    /// let map = settings.sources_map();
+    /// assert_eq!(map.get("host"), Some(&Category::Env));
+    /// assert_eq!(map.get("port"), Some(&Category::Default));
+    /// ```
+    fn sources_map(&self) -> HashMap<String, Category> {
+        let mut map = HashMap::new();
+        self.collect_sources("", &mut map);
+        map
+    }
+}
+
+/// The synthetic [`Source`] for the compiled-in defaults layer.
+///
+/// Every [`Config::build`] starts from this layer, so any leaf no other source
+/// sets reports [`Category::Default`]. Exposed mainly for generated code; use
+/// [`defaults_source`] for the shared handle.
+pub struct DefaultsSource;
+
+impl Source for DefaultsSource {
+    fn name(&self) -> &str {
+        "default"
+    }
+
+    fn category(&self) -> Category {
+        Category::Default
+    }
+
+    fn deserialize(
+        &self,
+        _seed: &mut dyn for<'de> FnMut(
+            &mut dyn erased_serde::Deserializer<'de>,
+        ) -> Result<(), erased_serde::Error>,
+    ) -> Result<(), erased_serde::Error> {
+        Ok(())
+    }
+}
+
+static DEFAULTS_SOURCE: OnceLock<SourceArc> = OnceLock::new();
+
+/// Shared [`SourceArc`] handle for the [`DefaultsSource`] layer.
+///
+/// ```
+/// use provcfg::{Category, Source};
+///
+/// assert_eq!(provcfg::defaults_source().category(), Category::Default);
+/// ```
+#[must_use]
+pub fn defaults_source() -> SourceArc {
+    DEFAULTS_SOURCE
+        .get_or_init(|| Arc::new(DefaultsSource))
+        .clone()
+}
+
+/// `serde` `deserialize_with` helper for `Vec<String>` leaves that accepts
+/// either a real array (TOML/JSON arrays) or a comma-separated string (the form
+/// env vars and bare CLI flags use).
+///
+/// Wired automatically by `#[configurable(env_list)]`, so you rarely name it
+/// directly. Empty strings become an empty `Vec`; whitespace around each
+/// element is trimmed.
+pub fn deserialize_env_list<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum StringOrVec {
+        Vec(Vec<String>),
+        Csv(String),
+    }
+
+    let opt = Option::<StringOrVec>::deserialize(d)?;
+    Ok(opt.map(|x| match x {
+        StringOrVec::Vec(v) => v,
+        StringOrVec::Csv(s) if s.is_empty() => Vec::new(),
+        StringOrVec::Csv(s) => s.split(',').map(|t| t.trim().to_string()).collect(),
+    }))
+}
+
+/// A named origin of raw configuration data.
+///
+/// The [`sources`] module provides implementations for the common cases:
+/// `JsonStr`, `TomlStr`, `EnvSource` and `CliSource` (each behind a feature).
+/// Implement this trait yourself to support a format the built-ins miss
+/// (XML, a database, a secret store, etc.).
+///
+/// # Contract
+///
+/// - [`deserialize`](Self::deserialize) is called inline from
+///   [`Config::build`] and is **synchronous**. If your source needs I/O or
+///   async work, do it on construction (the way `sources::TomlStr` reads a
+///   file in the file-loading helper) and store the materialized data on the
+///   struct.
+/// - To surface a parse/load error, convert it through
+///   `<erased_serde::Error as serde::de::Error>::custom(my_error)`.
+/// - [`category`](Self::category) defaults to `Category::Custom("user")`.
+///   Override it to a built-in bucket or your own `Custom("...")` label so
+///   provenance maps render the source the way you want.
+///
+/// # Example: a custom in-memory source
+///
+/// The shape any source ends up using: build a [`serde_json::Value`] (or any
+/// type that implements [`serde::Deserializer`]) and erase it through
+/// `erased_serde`. The built-in env source uses exactly this pattern.
+///
+/// ```
+/// use provcfg::erased_serde;
+/// use provcfg::{Category, Config, Configurable, Source};
+///
+/// #[derive(Configurable, serde::Deserialize, Clone, Default)]
+/// struct Settings {
+///     host: String,
+/// }
+///
+/// struct MapSource {
+///     name: String,
+///     data: serde_json::Value,
+/// }
+///
+/// impl Source for MapSource {
+///     fn name(&self) -> &str {
+///         &self.name
+///     }
+///
+///     fn category(&self) -> Category {
+///         Category::Custom("map")
+///     }
+///
+///     fn deserialize(
+///         &self,
+///         seed: &mut dyn for<'de> FnMut(
+///             &mut dyn erased_serde::Deserializer<'de>,
+///         ) -> Result<(), erased_serde::Error>,
+///     ) -> Result<(), erased_serde::Error> {
+///         let mut erased = <dyn erased_serde::Deserializer>::erase(&self.data);
+///         seed(&mut erased)
+///     }
+/// }
+///
+/// let settings = Config::new()
+///     .add_source(MapSource {
+///         name: "demo".into(),
+///         data: serde_json::json!({ "host": "from-map" }),
+///     })
+///     .build::<SettingsProv>()
+///     .unwrap();
+///
+/// assert_eq!(settings.host.value(), "from-map");
+/// assert_eq!(settings.host.source().category(), Category::Custom("map"));
+/// ```
+pub trait Source {
+    /// Human-readable label for this source, surfaced in [`Error`] messages.
+    fn name(&self) -> &str;
+
+    /// Hand this source's raw data to `seed` as a type-erased deserializer.
+    /// Called once per [`Config::build`].
+    fn deserialize(
+        &self,
+        seed: &mut dyn for<'de> FnMut(
+            &mut dyn erased_serde::Deserializer<'de>,
+        ) -> Result<(), erased_serde::Error>,
+    ) -> Result<(), erased_serde::Error>;
+
+    /// The [`Category`] bucket this source belongs to. Defaults to
+    /// `Category::Custom("user")`.
+    fn category(&self) -> Category {
+        Category::Custom("user")
+    }
+}
+
+/// Which kind of source contributed a value.
+///
+/// Surfaced separately from a source's human-readable name so a UI can render
+/// one visual per bucket. Serializes as a lowercase string (`"default"`,
+/// `"file"`, `"env"`, `"cli"`, or the `Custom` label).
+///
+/// ```
+/// use provcfg::Category;
+///
+/// assert_eq!(Category::Env.as_str(), "env");
+/// assert_eq!(Category::Custom("vault").as_str(), "vault");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Category {
+    /// Built-in defaults layer.
+    Default,
+    /// A configuration file (JSON, TOML, ...).
+    File,
+    /// Environment variables.
+    Env,
+    /// Command-line arguments.
+    Cli,
+    /// A caller-defined source; the string is a free-form label.
+    Custom(&'static str),
+}
+
+impl Category {
+    /// The stable lowercase label, as used by the [`serde::Serialize`] impl.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Category::Default => "default",
+            Category::File => "file",
+            Category::Env => "env",
+            Category::Cli => "cli",
+            Category::Custom(s) => s,
+        }
+    }
+}
+
+impl serde::Serialize for Category {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// A builder that collects [`Source`]s in priority order, then merges them.
+///
+/// Sources are applied in the order they are added; a later source overrides an
+/// earlier one for any leaf it sets. Unset leaves keep the earlier value, and a
+/// leaf no source sets falls back to the compiled-in defaults layer.
+///
+/// ```
+/// # use provcfg::{Config, Configurable};
+/// # #[derive(Configurable, serde::Deserialize, Clone, Default)]
+/// # struct Settings { host: String }
+/// # unsafe {
+/// #     std::env::set_var("BASE_HOST", "from-base");
+/// #     std::env::set_var("EXTRA_HOST", "from-extra");
+/// # }
+/// // `EXTRA` is added after `BASE`, so it wins for `host`.
+/// let settings = Config::new()
+///     .add_env("BASE")
+///     .add_env("EXTRA")
+///     .build::<SettingsProv>()
+///     .unwrap();
+///
+/// assert_eq!(settings.host.value(), "from-extra");
+/// ```
+pub struct Config {
+    sources: Vec<SourceArc>,
+}
+
+impl Config {
+    /// Create a `Config` with no sources yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            sources: Vec::new(),
+        }
+    }
+
+    /// Append any custom [`Source`]. The typed `add_*` helpers wrap the
+    /// built-in sources; reach for this to plug in your own.
+    #[must_use]
+    pub fn add_source<S: Source + Send + Sync + 'static>(mut self, source: S) -> Self {
+        self.sources.push(Arc::new(source));
+        self
+    }
+
+    /// Add a TOML file source. The file is read immediately; a read failure is
+    /// surfaced as [`Error::Io`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if `path` cannot be read.
+    #[cfg(feature = "toml")]
+    pub fn add_toml_file(self, path: impl AsRef<std::path::Path>) -> Result<Self, Error> {
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path).map_err(|error| Error::Io {
+            path: path.display().to_string(),
+            error,
+        })?;
+        Ok(self.add_toml_str(path.display().to_string(), content))
+    }
+
+    /// Add an in-memory TOML source. `name` is a human-readable label used in
+    /// error messages.
+    ///
+    /// ```
+    /// # use provcfg::{Category, Config, Configurable};
+    /// # #[derive(Configurable, serde::Deserialize, Clone, Default)]
+    /// # struct Settings { host: String, port: u16 }
+    /// let settings = Config::new()
+    ///     .add_toml_str("app.toml", "host = \"localhost\"\nport = 8080")
+    ///     .build::<SettingsProv>()
+    ///     .unwrap();
+    ///
+    /// assert_eq!(settings.host.value(), "localhost");
+    /// assert_eq!(settings.host.source().category(), Category::File);
+    /// ```
+    #[cfg(feature = "toml")]
+    #[must_use]
+    pub fn add_toml_str(self, name: impl Into<String>, content: impl Into<String>) -> Self {
+        self.add_source(sources::TomlStr::new(name, content))
+    }
+
+    /// Add a JSON file source. The file is read immediately; a read failure is
+    /// surfaced as [`Error::Io`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if `path` cannot be read.
+    #[cfg(feature = "json")]
+    pub fn add_json_file(self, path: impl AsRef<std::path::Path>) -> Result<Self, Error> {
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path).map_err(|error| Error::Io {
+            path: path.display().to_string(),
+            error,
+        })?;
+        Ok(self.add_json_str(path.display().to_string(), content))
+    }
+
+    /// Add an in-memory JSON source. `name` is a human-readable label used in
+    /// error messages.
+    ///
+    /// ```
+    /// # use provcfg::{Category, Config, Configurable};
+    /// # #[derive(Configurable, serde::Deserialize, Clone, Default)]
+    /// # struct Settings { host: String, port: u16 }
+    /// let settings = Config::new()
+    ///     .add_json_str("app.json", r#"{ "host": "localhost", "port": 8080 }"#)
+    ///     .build::<SettingsProv>()
+    ///     .unwrap();
+    ///
+    /// assert_eq!(settings.port.value(), &8080);
+    /// assert_eq!(settings.port.source().category(), Category::File);
+    /// ```
+    #[cfg(feature = "json")]
+    #[must_use]
+    pub fn add_json_str(self, name: impl Into<String>, content: impl Into<String>) -> Self {
+        self.add_source(sources::JsonStr::new(name, content))
+    }
+
+    /// Add an environment-variable source reading `<PREFIX>_*` variables.
+    /// Nested fields use `__` as the separator.
+    ///
+    /// ```
+    /// # use provcfg::{Category, Config, Configurable};
+    /// # #[derive(Configurable, serde::Deserialize, Clone, Default)]
+    /// # struct Settings { host: String }
+    /// # unsafe { std::env::set_var("MYAPP_HOST", "db.internal"); }
+    /// let settings = Config::new()
+    ///     .add_env("MYAPP")
+    ///     .build::<SettingsProv>()
+    ///     .unwrap();
+    ///
+    /// assert_eq!(settings.host.value(), "db.internal");
+    /// assert_eq!(settings.host.source().category(), Category::Env);
+    /// ```
+    #[cfg(feature = "env")]
+    #[must_use]
+    pub fn add_env(self, prefix: impl AsRef<str>) -> Self {
+        self.add_source(sources::EnvSource::new("env", prefix))
+    }
+
+    /// Add an environment-variable source where the given dotted paths are
+    /// treated as comma-separated lists. See [`sources::EnvSource::with_list_keys`].
+    ///
+    /// ```
+    /// # use provcfg::{Config, Configurable};
+    /// # #[derive(Configurable, serde::Deserialize, Clone, Default)]
+    /// # struct Settings { hosts: Vec<String> }
+    /// # unsafe { std::env::set_var("SVC_HOSTS", "a.example,b.example"); }
+    /// // `SVC_HOSTS` is a comma-separated list; name it so the source splits it.
+    /// let settings = Config::new()
+    ///     .add_env_with_list_keys("SVC", ["hosts"])
+    ///     .build::<SettingsProv>()
+    ///     .unwrap();
+    ///
+    /// assert_eq!(settings.hosts.value(), &["a.example", "b.example"]);
+    /// ```
+    #[cfg(feature = "env")]
+    #[must_use]
+    pub fn add_env_with_list_keys<I, S>(self, prefix: impl AsRef<str>, list_keys: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.add_source(sources::EnvSource::new("env", prefix).with_list_keys(list_keys))
+    }
+
+    /// Add a CLI source from a pre-built partial (every field an `Option`).
+    /// Typically produced from clap via the `provcfg-clap` `ClapArgs` derive.
+    ///
+    /// ```
+    /// # use provcfg::{Category, Config, Configurable};
+    /// # #[derive(Configurable, serde::Deserialize, Clone, Default)]
+    /// # struct Settings { host: String, port: u16 }
+    /// let from_cli = SettingsPartial { host: Some("cli.example".to_string()), port: None };
+    ///
+    /// let settings = Config::new()
+    ///     .add_cli(from_cli)
+    ///     .build::<SettingsProv>()
+    ///     .unwrap();
+    ///
+    /// assert_eq!(settings.host.value(), "cli.example");
+    /// assert_eq!(settings.host.source().category(), Category::Cli);
+    /// // `port` was `None` on the partial, so it falls back to the default.
+    /// assert_eq!(settings.port.source().category(), Category::Default);
+    /// ```
+    #[cfg(feature = "cli")]
+    #[must_use]
+    pub fn add_cli<P>(self, partial: P) -> Self
+    where
+        P: serde::Serialize + Send + Sync + 'static,
+    {
+        self.add_source(sources::CliSource::new("cli", partial))
+    }
+
+    /// Merge every added source plus the implicit defaults layer into `T`, a
+    /// generated `*Prov` struct.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Deserialize`] if a source's data does not fit `T`.
+    pub fn build<T: Provenance>(&self) -> Result<T, Error> {
+        let mut partials = Vec::with_capacity(self.sources.len());
+        for s in &self.sources {
+            let mut slot: Option<T::Partial> = None;
+            s.deserialize(&mut |de| {
+                slot = Some(erased_serde::deserialize::<T::Partial>(de)?);
+                Ok(())
+            })
+            .map_err(|error| Error::Deserialize {
+                source: s.name().to_string(),
+                error,
+            })?;
+            partials.push(Some(
+                slot.expect("Source::deserialize did not invoke its callback"),
+            ));
+        }
+        Ok(T::merge(&self.sources, partials))
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A typed value together with the [`Source`] that supplied it. One entry of a
+/// [`ValueHistory`].
+pub struct Value<T> {
+    /// The value contributed by `source`.
+    pub value: T,
+    /// The source this value came from.
+    pub source: SourceArc,
+}
+
+/// The ordered history of values a single config leaf received.
+///
+/// The last entry is the *active* value; earlier entries are values that were
+/// overridden, kept so callers can audit each source's contribution. Every leaf
+/// of a generated `*Prov` struct is a `ValueHistory`.
+///
+/// ```
+/// # use provcfg::{Category, Config, Configurable};
+/// # #[derive(Configurable, serde::Deserialize, Clone, Default)]
+/// # struct Settings {
+/// #     #[configurable(secret)]
+/// #     token: String,
+/// # }
+/// # unsafe { std::env::set_var("VH_TOKEN", "s3cret"); }
+/// let settings = Config::new().add_env("VH").build::<SettingsProv>().unwrap();
+///
+/// assert_eq!(settings.token.value(), "s3cret");
+/// assert_eq!(settings.token.source().category(), Category::Env);
+/// assert!(settings.token.is_secret());
+/// ```
+pub struct ValueHistory<T> {
+    inner: Vec<Value<T>>,
+    secret: bool,
+}
+
+impl<T> ValueHistory<T> {
+    /// Create an empty history. The merge step fills it; you rarely call this.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: Vec::new(),
+            secret: false,
+        }
+    }
+
+    /// Builder: marks this history as carrying sensitive data. Used by the
+    /// derive macro for fields annotated `#[configurable(secret)]`.
+    #[must_use]
+    pub fn mark_secret(mut self) -> Self {
+        self.secret = true;
+        self
+    }
+
+    /// Whether this history holds sensitive data. Consumers (UIs, serializers)
+    /// should redact the value when this returns `true`.
+    #[must_use]
+    pub fn is_secret(&self) -> bool {
+        self.secret
+    }
+
+    /// Append a value, making it the new active value.
+    pub fn push(&mut self, value: Value<T>) {
+        self.inner.push(value);
+    }
+
+    /// Active value: the last entry in the history.
+    ///
+    /// # Panics
+    /// Panics if the history is empty. By design every `ValueHistory` built
+    /// via `Config::build` is populated by the defaults layer, so this should
+    /// not happen for properly-built configs.
+    pub fn value(&self) -> &T {
+        &self.inner.last().expect("ValueHistory is empty").value
+    }
+
+    /// Source of the active value.
+    ///
+    /// # Panics
+    /// Panics if the history is empty (see [`Self::value`]).
+    pub fn source(&self) -> &dyn Source {
+        &*self.inner.last().expect("ValueHistory is empty").source
+    }
+
+    /// The full history, oldest first. The last entry is the active value;
+    /// earlier entries are values that were overridden. The first entry is
+    /// always the compiled-in defaults layer.
+    ///
+    /// ```
+    /// # use provcfg::{Category, Config, Configurable};
+    /// # #[derive(Configurable, serde::Deserialize, Clone, Default)]
+    /// # struct Settings { host: String }
+    /// # unsafe {
+    /// #     std::env::set_var("HIST_BASE_HOST", "from-base");
+    /// #     std::env::set_var("HIST_OVERRIDE_HOST", "from-override");
+    /// # }
+    /// let settings = Config::new()
+    ///     .add_env("HIST_BASE")
+    ///     .add_env("HIST_OVERRIDE")
+    ///     .build::<SettingsProv>()
+    ///     .unwrap();
+    ///
+    /// // defaults layer + two env sources, oldest first.
+    /// let chain = settings.host.history();
+    /// assert_eq!(chain.len(), 3);
+    /// assert_eq!(chain[0].value, "");
+    /// assert_eq!(chain[0].source.category(), Category::Default);
+    /// assert_eq!(chain[1].value, "from-base");
+    /// assert_eq!(chain[2].value, "from-override"); // active
+    /// ```
+    #[must_use]
+    pub fn history(&self) -> &[Value<T>] {
+        &self.inner
+    }
+}
+
+impl<T> Default for ValueHistory<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The error type returned by [`Config::build`] and the `add_*_file` helpers.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// A source's raw data could not be deserialized into the target struct.
+    #[error("failed to deserialize source {source:?}: {error}")]
+    Deserialize {
+        source: String,
+        #[source]
+        error: erased_serde::Error,
+    },
+    /// A config file could not be read from disk.
+    #[error("failed to read config file {path:?}: {error}")]
+    Io {
+        path: String,
+        #[source]
+        error: std::io::Error,
+    },
+}
+
+#[cfg(test)]
+mod tests;

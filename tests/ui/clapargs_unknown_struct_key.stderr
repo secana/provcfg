@@ -1,0 +1,5 @@
+error: unknown struct-level #[configurable(...)] key; expected `clap_prefix`
+ --> tests/ui/clapargs_unknown_struct_key.rs:5:16
+  |
+5 | #[configurable(clap_prefx = "app")]
+  |                ^^^^^^^^^^
