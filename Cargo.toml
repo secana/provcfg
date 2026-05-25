@@ -55,4 +55,8 @@ serde_json = "1.0"
 tempfile = "3"
 trybuild = "1"
 clap = { version = "4", features = ["derive"] }
-provcfg-clap = { path = "provcfg-clap", version = "0.1.0" }
+# `version` omitted on purpose so this dev-dep is stripped from the published
+# manifest and doesn't force a publish-time lookup on crates.io. The cyclic
+# dev-dep between `provcfg` and `provcfg-clap` would otherwise deadlock the
+# release-plz publish order.
+provcfg-clap = { path = "provcfg-clap" }
