@@ -245,3 +245,204 @@ fn env_parent_child_collision_resolves_deterministically_to_child() {
         std::env::remove_var(format!("{prefix}_DATABASE__HOST"));
     }
 }
+
+/// Field types that exercise how raw env strings are coerced into the target
+/// type: `String` keeps the value verbatim, scalars are parsed from it.
+#[cfg(feature = "env")]
+mod env_typing {
+    use crate as provcfg;
+    use crate::{Category, Config, Configurable};
+
+    #[derive(serde::Deserialize, Clone, Default, Configurable)]
+    pub struct Inner {
+        pub secret: String,
+        pub retries: u16,
+    }
+
+    #[derive(serde::Deserialize, Clone, Default, Configurable)]
+    pub struct Typed {
+        pub text: String,
+        pub port: u16,
+        pub offset: i64,
+        pub ratio: f64,
+        pub enabled: bool,
+        pub maybe_text: Option<String>,
+        pub maybe_port: Option<u16>,
+        #[configurable(nested)]
+        pub inner: Inner,
+        pub items: Vec<String>,
+        pub numbers: Vec<u16>,
+    }
+
+    /// Set the given `<prefix>_<suffix>` vars, build `Typed` from env only,
+    /// remove the vars again and return the build result.
+    fn build_with(
+        prefix: &str,
+        vars: &[(&str, &str)],
+        list_keys: &[&str],
+    ) -> Result<TypedProv, crate::Error> {
+        // SAFETY: every test passes a unique prefix; no other test reads or
+        // writes these vars.
+        unsafe {
+            for (k, v) in vars {
+                std::env::set_var(format!("{prefix}_{k}"), v);
+            }
+        }
+        let result = Config::new()
+            .add_env_with_list_keys(prefix, list_keys.iter().copied())
+            .build::<TypedProv>();
+        unsafe {
+            for (k, _) in vars {
+                std::env::remove_var(format!("{prefix}_{k}"));
+            }
+        }
+        result
+    }
+
+    fn text_of(prefix: &str, value: &str) -> String {
+        build_with(prefix, &[("TEXT", value)], &[])
+            .unwrap()
+            .text
+            .value()
+            .clone()
+    }
+
+    #[test]
+    fn numeric_looking_value_stays_a_string() {
+        assert_eq!(text_of("PROVCFG_TYPING_NUMERIC", "123456"), "123456");
+        assert_eq!(text_of("PROVCFG_TYPING_FLOAT", "1.50"), "1.50");
+        assert_eq!(text_of("PROVCFG_TYPING_LEADING_ZERO", "007"), "007");
+    }
+
+    #[test]
+    fn bool_looking_value_stays_a_string() {
+        assert_eq!(text_of("PROVCFG_TYPING_TRUE", "true"), "true");
+        assert_eq!(text_of("PROVCFG_TYPING_FALSE", "false"), "false");
+    }
+
+    #[test]
+    fn quoted_value_keeps_its_quotes() {
+        assert_eq!(text_of("PROVCFG_TYPING_QUOTED", r#""abc""#), r#""abc""#);
+    }
+
+    #[test]
+    fn null_value_is_the_literal_string_null() {
+        let cfg = build_with("PROVCFG_TYPING_NULL", &[("TEXT", "null")], &[]).unwrap();
+        assert_eq!(cfg.text.value(), "null");
+        assert_eq!(cfg.text.source().category(), Category::Env);
+    }
+
+    #[test]
+    fn json_looking_value_stays_a_string() {
+        assert_eq!(text_of("PROVCFG_TYPING_ARRAY", "[1,2]"), "[1,2]");
+        assert_eq!(text_of("PROVCFG_TYPING_OBJECT", r#"{"a":1}"#), r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn scalars_are_parsed_into_their_field_type() {
+        let cfg = build_with(
+            "PROVCFG_TYPING_SCALARS",
+            &[
+                ("PORT", "8000"),
+                ("OFFSET", "-42"),
+                ("RATIO", "0.25"),
+                ("ENABLED", "true"),
+            ],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(cfg.port.value(), &8000);
+        assert_eq!(cfg.port.source().category(), Category::Env);
+        assert_eq!(cfg.offset.value(), &-42);
+        assert!((cfg.ratio.value() - 0.25).abs() < f64::EPSILON);
+        assert!(cfg.enabled.value());
+    }
+
+    #[test]
+    fn false_is_parsed_into_bool_field() {
+        let cfg = build_with("PROVCFG_TYPING_BOOL_FALSE", &[("ENABLED", "false")], &[]).unwrap();
+        assert!(!cfg.enabled.value());
+        assert_eq!(cfg.enabled.source().category(), Category::Env);
+    }
+
+    #[test]
+    fn unparsable_scalar_reports_the_value_and_type() {
+        let err = match build_with("PROVCFG_TYPING_BAD_PORT", &[("PORT", "eighty")], &[]) {
+            Ok(_) => panic!("expected a deserialize error"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("eighty"),
+            "message should name the value: {msg}"
+        );
+        assert!(msg.contains("u16"), "message should name the type: {msg}");
+    }
+
+    #[test]
+    fn out_of_range_number_is_rejected() {
+        assert!(build_with("PROVCFG_TYPING_RANGE", &[("PORT", "70000")], &[]).is_err());
+    }
+
+    #[test]
+    fn option_string_keeps_raw_value() {
+        for (prefix, raw) in [
+            ("PROVCFG_TYPING_OPT_STR", "hello"),
+            ("PROVCFG_TYPING_OPT_DIGITS", "123"),
+            ("PROVCFG_TYPING_OPT_NULL", "null"),
+        ] {
+            let cfg = build_with(prefix, &[("MAYBE_TEXT", raw)], &[]).unwrap();
+            assert_eq!(cfg.maybe_text.value().as_deref(), Some(raw));
+            assert_eq!(cfg.maybe_text.source().category(), Category::Env);
+        }
+    }
+
+    #[test]
+    fn option_number_is_parsed() {
+        let cfg = build_with("PROVCFG_TYPING_OPT_NUM", &[("MAYBE_PORT", "8080")], &[]).unwrap();
+        assert_eq!(cfg.maybe_port.value(), &Some(8080));
+        assert_eq!(cfg.maybe_port.source().category(), Category::Env);
+    }
+
+    #[test]
+    fn unset_option_falls_back_to_default() {
+        let cfg = build_with("PROVCFG_TYPING_OPT_UNSET", &[("TEXT", "x")], &[]).unwrap();
+        assert_eq!(cfg.maybe_port.value(), &None);
+        assert_eq!(cfg.maybe_port.source().category(), Category::Default);
+    }
+
+    #[test]
+    fn nested_keys_are_typed_by_their_field() {
+        let cfg = build_with(
+            "PROVCFG_TYPING_NESTED",
+            &[("INNER__SECRET", "123456"), ("INNER__RETRIES", "3")],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(cfg.inner.secret.value(), "123456");
+        assert_eq!(cfg.inner.retries.value(), &3);
+        assert_eq!(cfg.inner.secret.source().category(), Category::Env);
+    }
+
+    #[test]
+    fn list_keys_split_and_type_each_element() {
+        let cfg = build_with(
+            "PROVCFG_TYPING_LISTS",
+            &[("ITEMS", "1, true ,null"), ("NUMBERS", "80,443")],
+            &["items", "numbers"],
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.items.value(),
+            &vec!["1".to_string(), "true".to_string(), "null".to_string()]
+        );
+        assert_eq!(cfg.numbers.value(), &vec![80, 443]);
+    }
+
+    #[test]
+    fn empty_list_key_yields_empty_list() {
+        let cfg = build_with("PROVCFG_TYPING_EMPTY_LIST", &[("ITEMS", "")], &["items"]).unwrap();
+        assert!(cfg.items.value().is_empty());
+        assert_eq!(cfg.items.source().category(), Category::Env);
+    }
+}

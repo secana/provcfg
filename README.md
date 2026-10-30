@@ -167,7 +167,7 @@ Only `env` is enabled by default; opt into the file and CLI sources you need.
 
 | Feature       | Enables                            | Extra dependency |
 |---------------|------------------------------------|------------------|
-| `env`         | `EnvSource` / `add_env` (default)  | `serde_json`     |
+| `env`         | `EnvSource` / `add_env` (default)  | none             |
 | `json`        | `JsonStr` / `add_json_*`           | `serde_json`     |
 | `toml`        | `TomlStr` / `add_toml_*`           | `toml`           |
 | `cli`         | `CliSource` / `add_cli`            | `serde_json`     |

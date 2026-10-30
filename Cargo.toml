@@ -42,7 +42,7 @@ toml = { version = "1.1", optional = true }
 default = ["env"]
 json = ["dep:serde_json"]
 toml = ["dep:toml"]
-env = ["dep:serde_json"] # Reuses serde_json internally to interpret values.
+env = []
 cli = ["dep:serde_json"] # Reuses serde_json to round-trip partials produced by clap & friends.
 # `clap-derive` opt-in pulls in `provcfg-clap`, which re-exports the
 # `ClapArgs` derive macro. Disabled by default to keep `clap` out of the
