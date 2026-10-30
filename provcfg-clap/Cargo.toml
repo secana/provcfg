@@ -11,7 +11,7 @@ authors.workspace = true
 
 [dependencies]
 clap = { version = "4", features = ["derive", "string"] }
-provcfg-clap-macros = { path = "../provcfg-clap-macros", version = "0.1.0" }
+provcfg-clap-macros = { path = "../provcfg-clap-macros", version = "0.1.1" }
 
 [dev-dependencies]
 # `version` omitted on purpose: see the matching note in the root `Cargo.toml`.
