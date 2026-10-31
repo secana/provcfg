@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "provcfg"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "clap",
  "erased-serde",
@@ -304,7 +304,7 @@ dependencies = [
 
 [[package]]
 name = "provcfg-clap"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "clap",
  "provcfg",
@@ -314,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "provcfg-clap-macros"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "provcfg-macros"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "proc-macro2",
  "quote",

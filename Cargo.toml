@@ -2,7 +2,7 @@
 members = ["provcfg-macros", "provcfg-clap", "provcfg-clap-macros"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/secana/provcfg"
@@ -26,8 +26,8 @@ authors.workspace = true
 all-features = true
 
 [dependencies]
-provcfg-macros = { path = "provcfg-macros", version = "0.1.1" }
-provcfg-clap = { path = "provcfg-clap", version = "0.1.1", optional = true }
+provcfg-macros = { path = "provcfg-macros", version = "0.1.2" }
+provcfg-clap = { path = "provcfg-clap", version = "0.1.2", optional = true }
 serde = { version = "1", features = ["derive"] }
 erased-serde = "0.4"
 thiserror = "2"
