@@ -359,7 +359,7 @@ pub trait Source {
 ///
 /// Surfaced separately from a source's human-readable name so a UI can render
 /// one visual per bucket. Serializes as a lowercase string (`"default"`,
-/// `"file"`, `"env"`, `"cli"`, or the `Custom` label).
+/// `"file"`, `"env"`, `"cli"`, `"database"`, or the `Custom` label).
 ///
 /// ```
 /// use provcfg::Category;
@@ -378,6 +378,8 @@ pub enum Category {
     Env,
     /// Command-line arguments.
     Cli,
+    /// A database, e.g. a key/value settings table.
+    Database,
     /// A caller-defined source; the string is a free-form label.
     Custom(&'static str),
 }
@@ -391,6 +393,7 @@ impl Category {
             Category::File => "file",
             Category::Env => "env",
             Category::Cli => "cli",
+            Category::Database => "database",
             Category::Custom(s) => s,
         }
     }
