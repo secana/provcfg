@@ -20,15 +20,18 @@ provcfg = { path = "..", version = "0.1.2", default-features = false, features =
 sea-orm = { version = "2.0.4", default-features = false, features = ["macros"] }
 sea-orm-migration = { version = "2.0.4", default-features = false }
 thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["time"], optional = true }
 
 [features]
 default = []
 sqlite = ["sea-orm/sqlx-sqlite", "sea-orm-migration/sqlx-sqlite"]
 postgres = ["sea-orm/sqlx-postgres", "sea-orm-migration/sqlx-postgres"]
+# `LiveSettings::watch`: background change detection. Needs a tokio runtime.
+watch = ["dep:tokio"]
 
 [dev-dependencies]
 # `version` omitted on purpose: see the matching note in the root `Cargo.toml`.
 provcfg = { path = "..", features = ["json", "live"] }
 sea-orm = { version = "2.0.4", default-features = false, features = ["macros", "runtime-tokio-rustls"] }
 serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

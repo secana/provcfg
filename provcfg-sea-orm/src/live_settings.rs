@@ -120,6 +120,16 @@ impl<T: Provenance + Send + Sync + 'static> LiveSettings<T> {
         &self.inner.namespace
     }
 
+    #[cfg(feature = "watch")]
+    pub(crate) fn db(&self) -> &DatabaseConnection {
+        &self.inner.db
+    }
+
+    #[cfg(feature = "watch")]
+    pub(crate) fn installed_revision(&self) -> i64 {
+        *self.lock_installed()
+    }
+
     /// Read the namespace again and apply it. Returns the changed paths.
     ///
     /// # Errors
