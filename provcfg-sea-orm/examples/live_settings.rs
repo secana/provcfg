@@ -70,16 +70,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         ("set", [path, value]) => {
             let outcome = settings.set(path, value).await?;
             println!("changed: {:?}", outcome.changed);
-            if let Some(category) = outcome.hidden_by {
+            for (path, category) in outcome.hidden {
                 println!(
-                    "stored, but the {} layer still overrides it",
+                    "{path} stored, but the {} layer still overrides it",
                     category.as_str()
                 );
             }
             Ok(())
         }
         ("unset", [path]) => {
-            println!("changed: {:?}", settings.unset(path).await?);
+            println!("changed: {:?}", settings.unset(path).await?.changed);
             Ok(())
         }
         _ => Err(format!("unknown command {command:?} {rest:?}").into()),

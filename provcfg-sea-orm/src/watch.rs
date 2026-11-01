@@ -72,7 +72,7 @@ impl<T: Provenance + Send + Sync + 'static> LiveSettings<T> {
     pub fn watch(&self, options: WatchOptions) -> impl Future<Output = ()> + Send + 'static {
         let watcher = Watcher {
             settings: self.clone(),
-            seen: self.installed_revision(),
+            seen: self.revision(),
             options,
         };
         watcher.run()
