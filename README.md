@@ -114,12 +114,29 @@ struct Settings {
 }
 ```
 
+## Key/value sources
+
+`KeyValueSource` takes flat `dotted.key -> string` entries, such as the rows
+of a settings table, and reports `Category::Database`. Values are converted to
+the field type the same way env values are. It is always available and has no
+dependencies; load the entries yourself and hand them over:
+
+```rust
+use provcfg::sources::KeyValueSource;
+
+let rows = [("database.port", "5432")];
+let cfg = Config::new()
+    .add_source(KeyValueSource::new("settings-db", rows))
+    .build::<SettingsProv>()
+    .unwrap();
+```
+
 ## Custom sources
 
-To support a format the built-ins don't cover (XML, a database, a secret
-store), implement the [`Source`] trait. Most sources build something that
-implements `serde::Deserializer` (a `serde_json::Value` works fine) and erase
-it through `erased_serde`:
+To support a format the built-ins don't cover (XML, a secret store), implement
+the [`Source`] trait. Most sources build something that implements
+`serde::Deserializer` (a `serde_json::Value` works fine) and erase it through
+`erased_serde`:
 
 ```rust
 use provcfg::erased_serde;

@@ -7,5 +7,6 @@ mod attributes;
 mod basics;
 mod defaults;
 mod fixtures;
+mod key_value;
 mod sources;
 mod walk_and_serialize;
