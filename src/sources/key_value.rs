@@ -17,6 +17,9 @@ use crate::{Category, Source};
 ///   `Option<T>` field `Some`.
 /// - When a key and one of its children are both present (`database` and
 ///   `database.port`), the child wins regardless of entry order.
+/// - With [`with_json_values`](Self::with_json_values) (`json` feature), a
+///   value for a list, map, struct or enum with data is parsed as JSON, so one
+///   entry can hold a whole `Vec<Host>`.
 ///
 /// ```
 /// use provcfg::{Category, Config, Configurable};
@@ -43,6 +46,7 @@ pub struct KeyValueSource {
     name: String,
     entries: Vec<(String, String)>,
     list_keys: HashSet<String>,
+    json_values: bool,
 }
 
 impl KeyValueSource {
@@ -61,6 +65,7 @@ impl KeyValueSource {
                 .map(|(k, v)| (k.into(), v.into()))
                 .collect(),
             list_keys: HashSet::new(),
+            json_values: false,
         }
     }
 
@@ -75,6 +80,19 @@ impl KeyValueSource {
         S: Into<String>,
     {
         self.list_keys.extend(keys.into_iter().map(Into::into));
+        self
+    }
+
+    /// Parse a value as JSON when its field is a list, map, struct or enum
+    /// with data, e.g. `[{"name": "a"}]` for a `Vec<Host>` or `{"Tcp": 80}`
+    /// for an enum. Scalars, strings and unit enum variants stay plain text
+    /// (`8080`, `debug`, not `"debug"`), and so does a field that deserializes
+    /// itself from any type, such as an untagged enum. Without this, such a
+    /// value is an "invalid type" error. List keys are still split on `,`.
+    #[cfg(feature = "json")]
+    #[must_use]
+    pub fn with_json_values(mut self) -> Self {
+        self.json_values = true;
         self
     }
 }
@@ -99,6 +117,6 @@ impl Source for KeyValueSource {
             .iter()
             .map(|(key, value)| (key.split('.').map(str::to_string).collect(), value.clone()))
             .collect();
-        StrNode::from_entries(entries, &self.list_keys).feed(seed)
+        StrNode::from_entries(entries, &self.list_keys, self.json_values).feed(seed)
     }
 }

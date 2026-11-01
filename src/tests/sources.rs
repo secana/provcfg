@@ -470,3 +470,39 @@ mod env_typing {
         assert_eq!(cfg.items.source().category(), Category::Env);
     }
 }
+
+#[cfg(all(feature = "env", feature = "json"))]
+#[test]
+fn env_source_with_json_values_sets_lists_of_structs() {
+    use crate as provcfg;
+
+    #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+    struct Host {
+        name: String,
+    }
+    #[derive(serde::Deserialize, serde::Serialize, Clone, Default, Configurable)]
+    struct Hosts {
+        hosts: Vec<Host>,
+        port: u16,
+    }
+    let prefix = "PROVCFG_TEST_ENV_JSON";
+    // SAFETY: tests use a unique prefix; no other test reads/writes these vars.
+    unsafe {
+        std::env::set_var(format!("{prefix}_HOSTS"), r#"[{"name": "a"}]"#);
+        std::env::set_var(format!("{prefix}_PORT"), "80");
+    }
+
+    let source = crate::sources::EnvSource::new("env", prefix).with_json_values();
+    let config = Config::new()
+        .add_source(source)
+        .build::<HostsProv>()
+        .unwrap();
+
+    assert_eq!(config.hosts.value(), &[Host { name: "a".into() }]);
+    assert_eq!(config.port.value(), &80);
+
+    unsafe {
+        std::env::remove_var(format!("{prefix}_HOSTS"));
+        std::env::remove_var(format!("{prefix}_PORT"));
+    }
+}

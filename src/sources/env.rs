@@ -65,6 +65,7 @@ pub struct EnvSource {
     /// the later name wins.
     vars: Vec<(String, String)>,
     list_keys: HashSet<String>,
+    json_values: bool,
 }
 
 impl EnvSource {
@@ -84,6 +85,7 @@ impl EnvSource {
             name: name.into(),
             vars,
             list_keys: HashSet::new(),
+            json_values: false,
         }
     }
 
@@ -103,6 +105,17 @@ impl EnvSource {
     {
         self.list_keys
             .extend(keys.into_iter().map(|k| k.into().to_lowercase()));
+        self
+    }
+
+    /// Parse a value as JSON when its field is a list, map, struct or enum
+    /// with data, so `MYAPP_HOSTS='[{"name": "a"}]'` sets a `Vec<Host>`. Other
+    /// values are converted as described above. See
+    /// [`KeyValueSource::with_json_values`](crate::sources::KeyValueSource::with_json_values).
+    #[cfg(feature = "json")]
+    #[must_use]
+    pub fn with_json_values(mut self) -> Self {
+        self.json_values = true;
         self
     }
 }
@@ -130,6 +143,6 @@ impl Source for EnvSource {
                 (segments, value.clone())
             })
             .collect();
-        StrNode::from_entries(entries, &self.list_keys).feed(seed)
+        StrNode::from_entries(entries, &self.list_keys, self.json_values).feed(seed)
     }
 }
