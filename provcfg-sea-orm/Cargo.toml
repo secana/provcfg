@@ -14,7 +14,7 @@ authors.workspace = true
 all-features = true
 
 [dependencies]
-provcfg = { path = "..", version = "0.1.2", default-features = false, features = ["json", "live"] }
+provcfg = { path = "..", version = "0.2.0", default-features = false, features = ["json", "live"] }
 # No runtime or TLS feature on purpose: the application enables one (for
 # example `runtime-tokio-rustls`) on its own sea-orm dependency.
 sea-orm = { version = "2.0.4", default-features = false, features = ["macros"] }

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/secana/provcfg/compare/provcfg-v0.1.2...provcfg-v0.2.0) - 2026-11-01
+
+### Added
+
+- *(sea-orm)* [**breaking**] JSON values, validator, writable keys and batch writes
+- *(live)* [**breaking**] validator and preview for LiveConfig
+- *(sources)* parse JSON for lists, maps and structs with with_json_values
+- *(sea-orm)* add LiveSettings with validated write-back
+- *(live)* add LiveConfig and DynamicSource for runtime reloads
+- *(env)* [**breaking**] read environment variables when the source is created
+- *(sea-orm)* add provcfg-sea-orm crate for SQLite and PostgreSQL sources
+- *(sources)* add KeyValueSource for flat dotted-key entries
+- add Category::Database for database-backed sources
+
+### Other
+
+- *(sea-orm)* add a live_settings example service
+- *(sea-orm)* document LiveSettings, write-back and watching
+- describe live reloading in the README
+- describe database sources in the README
+- run PostgreSQL integration tests against a service container
+- *(sources)* extract string tree deserializer from env source
+
 ## [0.1.2](https://github.com/secana/provcfg/compare/provcfg-v0.1.1...provcfg-v0.1.2) - 2026-10-30
 
 ### Fixed
