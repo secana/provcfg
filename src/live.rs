@@ -1,9 +1,25 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use arc_swap::ArcSwap;
 
-use crate::{Category, Config, Error, Provenance, Source, SourceArc};
+use crate::{BoxError, Category, Config, Error, Provenance, Source, SourceArc};
+
+thread_local! {
+    /// Data that dynamic sources report instead of their own while
+    /// [`LiveConfig::preview`] builds on this thread, keyed by the slot.
+    static PREVIEWS: RefCell<Vec<(usize, SourceArc)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Removes the preview pushed last, also when the build panics.
+struct PreviewGuard;
+
+impl Drop for PreviewGuard {
+    fn drop(&mut self) {
+        PREVIEWS.with(|previews| previews.borrow_mut().pop());
+    }
+}
 
 /// A [`Source`] whose data can be replaced at runtime.
 ///
@@ -32,7 +48,24 @@ impl DynamicSource {
         *self.current.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(source);
     }
 
+    /// Identity of the shared slot, the same for every clone.
+    fn slot(&self) -> usize {
+        Arc::as_ptr(&self.current).addr()
+    }
+
     fn inner(&self) -> SourceArc {
+        let slot = self.slot();
+        let preview = PREVIEWS.with(|previews| {
+            let previews = previews.borrow();
+            previews
+                .iter()
+                .rev()
+                .find(|(key, _)| *key == slot)
+                .map(|(_, source)| source.clone())
+        });
+        if let Some(source) = preview {
+            return source;
+        }
         self.current
             .read()
             .unwrap_or_else(PoisonError::into_inner)
@@ -71,6 +104,7 @@ pub struct Change<T> {
 }
 
 type Callback<T> = Arc<dyn Fn(&Change<T>) + Send + Sync>;
+type Validator<T> = Box<dyn Fn(&T) -> Result<(), BoxError> + Send + Sync>;
 
 /// A config that can be rebuilt at runtime without restarting the service.
 ///
@@ -102,6 +136,7 @@ pub struct LiveConfig<T> {
     /// Serializes reloads so callbacks see changes in order.
     reload_lock: Mutex<()>,
     callbacks: Mutex<Vec<Callback<T>>>,
+    validator: Option<Validator<T>>,
 }
 
 impl<T: Provenance> LiveConfig<T> {
@@ -111,13 +146,90 @@ impl<T: Provenance> LiveConfig<T> {
     ///
     /// Returns [`Error::Deserialize`] if a source's data does not fit `T`.
     pub fn new(config: Config) -> Result<Self, Error> {
-        let current = ArcSwap::from_pointee(config.build::<T>()?);
+        Self::create(config, None)
+    }
+
+    /// Like [`new`](Self::new), but every build must also pass `validator`:
+    /// the first one, every [`reload`](Self::reload) and every
+    /// [`preview`](Self::preview). Use it for rules across fields or layers
+    /// that types cannot express, such as unique names or a value range. A
+    /// rejected reload keeps the previous config.
+    ///
+    /// ```
+    /// use provcfg::sources::KeyValueSource;
+    /// use provcfg::{Config, Configurable, DynamicSource, Error, LiveConfig};
+    ///
+    /// # #[derive(Configurable, serde::Deserialize, Clone, Default)]
+    /// # struct Settings { port: u16 }
+    /// let rows = DynamicSource::new("db", KeyValueSource::new("db", [("port", "80")]));
+    /// let live = LiveConfig::<SettingsProv>::with_validator(
+    ///     Config::new().add_source(rows.clone()),
+    ///     |config| match config.port.value() {
+    ///         0 => Err("port must not be 0"),
+    ///         _ => Ok(()),
+    ///     },
+    /// )
+    /// .unwrap();
+    ///
+    /// rows.replace(KeyValueSource::new("db", [("port", "0")]));
+    /// assert!(matches!(live.reload(), Err(Error::Invalid(_))));
+    /// assert_eq!(live.load().port.value(), &80);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Deserialize`] if a source's data does not fit `T`,
+    /// [`Error::Invalid`] if `validator` rejects the config.
+    pub fn with_validator<E: Into<BoxError>>(
+        config: Config,
+        validator: impl Fn(&T) -> Result<(), E> + Send + Sync + 'static,
+    ) -> Result<Self, Error> {
+        Self::create(
+            config,
+            Some(Box::new(move |config| {
+                validator(config).map_err(Into::into)
+            })),
+        )
+    }
+
+    fn create(config: Config, validator: Option<Validator<T>>) -> Result<Self, Error> {
+        let first = Self::checked_build(&config, validator.as_ref())?;
         Ok(Self {
             config,
-            current,
+            current: ArcSwap::from_pointee(first),
             reload_lock: Mutex::new(()),
             callbacks: Mutex::new(Vec::new()),
+            validator,
         })
+    }
+
+    fn checked_build(config: &Config, validator: Option<&Validator<T>>) -> Result<T, Error> {
+        let built = config.build::<T>()?;
+        if let Some(validator) = validator {
+            validator(&built).map_err(Error::Invalid)?;
+        }
+        Ok(built)
+    }
+
+    /// Build the config as it would be after `dynamic.replace(data)` and a
+    /// reload, without changing either: the current config, the source and
+    /// other threads are untouched. Use it to check data before storing it,
+    /// for example rows inside a transaction that is committed only if this
+    /// succeeds. `dynamic` must be one of this config's sources; otherwise
+    /// `data` is ignored.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`reload`](Self::reload).
+    pub fn preview<S: Source + Send + Sync + 'static>(
+        &self,
+        dynamic: &DynamicSource,
+        data: S,
+    ) -> Result<T, Error> {
+        let data: SourceArc = Arc::new(data);
+        PREVIEWS.with(|previews| previews.borrow_mut().push((dynamic.slot(), data)));
+        let _guard = PreviewGuard;
+        Self::checked_build(&self.config, self.validator.as_ref())
     }
 
     /// The current config. Cheap and lock-free; the snapshot stays valid and
@@ -135,14 +247,15 @@ impl<T: Provenance> LiveConfig<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Deserialize`] if a source's data does not fit `T`. The
-    /// previous config stays current and no callback runs.
+    /// Returns [`Error::Deserialize`] if a source's data does not fit `T`, or
+    /// [`Error::Invalid`] if the validator rejects it. The previous config
+    /// stays current and no callback runs.
     pub fn reload(&self) -> Result<Vec<String>, Error> {
         let _guard = self
             .reload_lock
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let new = Arc::new(self.config.build::<T>()?);
+        let new = Arc::new(Self::checked_build(&self.config, self.validator.as_ref())?);
         let old = self.current.swap(new.clone());
         let changed = changed_paths(&*old, &*new);
         if !changed.is_empty() {

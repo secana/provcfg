@@ -156,3 +156,84 @@ fn source_change_with_the_same_value_counts_as_a_change() {
         Category::Database
     );
 }
+
+fn port_not_zero(config: &AppConfigProv) -> Result<(), String> {
+    match config.database.port.value() {
+        0 => Err("port must not be 0".to_string()),
+        _ => Ok(()),
+    }
+}
+
+#[test]
+fn validator_rejects_the_first_build() {
+    let dynamic = DynamicSource::new("db", rows("0"));
+
+    let result = LiveConfig::<AppConfigProv>::with_validator(
+        Config::new().add_source(dynamic),
+        port_not_zero,
+    );
+
+    let Err(Error::Invalid(error)) = result else {
+        panic!("expected the validator to reject port 0");
+    };
+    assert_eq!(error.to_string(), "port must not be 0");
+}
+
+#[test]
+fn rejected_reload_keeps_the_config_and_runs_no_callback() {
+    let dynamic = DynamicSource::new("db", rows("1"));
+    let live = LiveConfig::<AppConfigProv>::with_validator(
+        Config::new().add_source(dynamic.clone()),
+        port_not_zero,
+    )
+    .unwrap();
+    let called = Arc::new(Mutex::new(false));
+    let seen = called.clone();
+    live.on_change(move |_| *seen.lock().unwrap() = true);
+
+    dynamic.replace(rows("0"));
+
+    assert!(matches!(live.reload(), Err(Error::Invalid(_))));
+    assert_eq!(live.load().database.port.value(), &1);
+    assert!(!*called.lock().unwrap());
+}
+
+#[test]
+fn preview_builds_with_the_data_without_applying_it() {
+    let dynamic = DynamicSource::new("db", rows("1"));
+    let live = live_with(&dynamic);
+
+    let preview = live.preview(&dynamic, rows("2")).unwrap();
+
+    assert_eq!(preview.database.port.value(), &2);
+    assert_eq!(live.load().database.port.value(), &1);
+    assert_eq!(live.reload().unwrap(), Vec::<String>::new());
+    assert_eq!(live.load().database.port.value(), &1);
+}
+
+#[test]
+fn preview_runs_the_validator() {
+    let dynamic = DynamicSource::new("db", rows("1"));
+    let live = LiveConfig::<AppConfigProv>::with_validator(
+        Config::new().add_source(dynamic.clone()),
+        port_not_zero,
+    )
+    .unwrap();
+
+    assert!(matches!(
+        live.preview(&dynamic, rows("0")),
+        Err(Error::Invalid(_))
+    ));
+    assert!(live.preview(&dynamic, rows("not-a-port")).is_err());
+}
+
+#[test]
+fn preview_ignores_data_for_another_dynamic_source() {
+    let dynamic = DynamicSource::new("db", rows("1"));
+    let other = DynamicSource::new("other", rows("5"));
+    let live = live_with(&dynamic);
+
+    let preview = live.preview(&other, rows("2")).unwrap();
+
+    assert_eq!(preview.database.port.value(), &1);
+}
