@@ -27,3 +27,6 @@ pub use env::EnvSource;
 mod cli;
 #[cfg(feature = "cli")]
 pub use cli::CliSource;
+
+#[cfg(feature = "env")]
+mod tree;
