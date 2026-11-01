@@ -4,7 +4,7 @@
 use provcfg::{Category, Config, Configurable};
 use provcfg_sea_orm::entity::setting;
 use provcfg_sea_orm::migration::migrations;
-use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
+use sea_orm::{ActiveModelTrait, ConnectionTrait, DatabaseConnection, Set};
 use sea_orm_migration::SchemaManager;
 
 #[derive(Configurable, serde::Deserialize, Clone, Default)]
@@ -95,6 +95,25 @@ pub async fn migration_down_drops_the_table(db: DatabaseConnection) {
     assert!(provcfg_sea_orm::load(&db, "svc").await.is_err());
 }
 
+pub async fn every_write_bumps_the_namespace_revision(db: DatabaseConnection) {
+    migrate_up(&db).await;
+    assert_eq!(provcfg_sea_orm::revision(&db, "svc").await.unwrap(), 0);
+
+    insert(&db, "svc", "name", "a").await;
+    let after_insert = provcfg_sea_orm::revision(&db, "svc").await.unwrap();
+    db.execute_unprepared("UPDATE provcfg_settings SET value = 'b' WHERE key = 'name'")
+        .await
+        .unwrap();
+    let after_update = provcfg_sea_orm::revision(&db, "svc").await.unwrap();
+    db.execute_unprepared("DELETE FROM provcfg_settings")
+        .await
+        .unwrap();
+    let after_delete = provcfg_sea_orm::revision(&db, "svc").await.unwrap();
+
+    assert!(0 < after_insert && after_insert < after_update && after_update < after_delete);
+    assert_eq!(provcfg_sea_orm::revision(&db, "other").await.unwrap(), 0);
+}
+
 /// Generate one `#[tokio::test]` per shared case. `$connect` takes the test
 /// name (backends may use it to isolate tests) and returns a connection, or
 /// `None` to skip.
@@ -107,6 +126,7 @@ macro_rules! backend_tests {
             loads_typed_values_from_its_namespace_only,
             source_name_includes_the_namespace,
             migration_down_drops_the_table,
+            every_write_bumps_the_namespace_revision,
         );
     };
     ($connect:path; $($case:ident),* $(,)?) => {
