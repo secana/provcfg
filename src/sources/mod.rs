@@ -4,6 +4,8 @@
 //! - `TomlStr`: an in-memory TOML document (`toml` feature).
 //! - `EnvSource`: process environment variables (`env` feature, on by default).
 //! - `CliSource`: a pre-built `*Partial`, e.g. from a CLI parser (`cli` feature).
+//! - `KeyValueSource`: flat `dotted.key -> string` entries, e.g. database rows
+//!   (always available).
 //!
 //! The [`Config`](crate::Config) `add_*` helpers wrap these. Construct them
 //! directly only when reaching for [`Config::add_source`](crate::Config::add_source).
@@ -28,5 +30,7 @@ mod cli;
 #[cfg(feature = "cli")]
 pub use cli::CliSource;
 
-#[cfg(feature = "env")]
+mod key_value;
+pub use key_value::KeyValueSource;
+
 mod tree;

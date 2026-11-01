@@ -267,7 +267,8 @@ where
 /// A named origin of raw configuration data.
 ///
 /// The [`sources`] module provides implementations for the common cases:
-/// `JsonStr`, `TomlStr`, `EnvSource` and `CliSource` (each behind a feature).
+/// `JsonStr`, `TomlStr`, `EnvSource`, `CliSource` (each behind a feature) and
+/// `KeyValueSource`.
 /// Implement this trait yourself to support a format the built-ins miss
 /// (XML, a database, a secret store, etc.).
 ///
