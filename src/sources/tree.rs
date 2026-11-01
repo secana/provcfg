@@ -2,6 +2,8 @@
 //! `path -> string` entries (environment variables, key/value database rows).
 //! Leaves stay strings until serde asks for a concrete type, so `"8080"` can
 //! become a `u16` and `"true"` a `bool` while `String` fields keep the text.
+//! Sources that opt into JSON values (`json` feature) also turn a leaf into a
+//! list, map, struct or enum with data by parsing it as JSON.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -11,13 +13,18 @@ use serde::de::{self, Error as _, IntoDeserializer, Visitor};
 #[derive(Debug)]
 pub(crate) enum StrNode {
     Str(String),
+    /// A string leaf that is parsed as JSON when the target is a list, map,
+    /// struct or enum with data, and used like [`StrNode::Str`] otherwise.
+    #[cfg_attr(not(feature = "json"), allow(dead_code))]
+    Json(String),
     List(Vec<String>),
     Map(BTreeMap<String, StrNode>),
 }
 
 impl StrNode {
     /// Build a map tree from `(path segments, raw value)` entries. Values whose
-    /// dotted path is in `list_keys` are split on `,`.
+    /// dotted path is in `list_keys` are split on `,`; with `json_values` the
+    /// other values become [`StrNode::Json`].
     ///
     /// Entries are stably sorted by path first, so a parent path is always
     /// inserted before its children and a deeper key wins a parent/child
@@ -26,11 +33,13 @@ impl StrNode {
     pub(crate) fn from_entries(
         mut entries: Vec<(Vec<String>, String)>,
         list_keys: &HashSet<String>,
+        json_values: bool,
     ) -> Self {
         entries.sort_by(|a, b| a.0.cmp(&b.0));
         let mut root = BTreeMap::new();
         for (segments, value) in entries {
-            let node = Self::leaf(value, list_keys.contains(&segments.join(".")));
+            let is_list = list_keys.contains(&segments.join("."));
+            let node = Self::leaf(value, is_list, json_values);
             insert_nested(&mut root, &segments, node);
         }
         StrNode::Map(root)
@@ -48,9 +57,13 @@ impl StrNode {
         seed(&mut erased)
     }
 
-    fn leaf(value: String, is_list: bool) -> Self {
+    fn leaf(value: String, is_list: bool, json_values: bool) -> Self {
         if !is_list {
-            return StrNode::Str(value);
+            return if json_values {
+                StrNode::Json(value)
+            } else {
+                StrNode::Str(value)
+            };
         }
         if value.is_empty() {
             return StrNode::List(Vec::new());
@@ -88,6 +101,31 @@ impl<'de> IntoDeserializer<'de, DeError> for StrNode {
     }
 }
 
+/// A [`StrNode::Json`] leaf parsed as JSON and handed to the same method of
+/// the parsed value; every other node goes to `deserialize_any`, which gives
+/// serde's usual "invalid type" error for a string.
+macro_rules! deserialize_structured {
+    ($($method:ident($($arg:ident: $ty:ty),*)),* $(,)?) => {
+        $(
+            #[cfg_attr(not(feature = "json"), allow(unused_variables))]
+            fn $method<V: Visitor<'de>>(self, $($arg: $ty,)* visitor: V) -> Result<V::Value, DeError> {
+                #[cfg(feature = "json")]
+                if let StrNode::Json(s) = self {
+                    return de::Deserializer::$method(parse_json(&s)?, $($arg,)* visitor)
+                        .map_err(DeError::custom);
+                }
+                self.deserialize_any(visitor)
+            }
+        )*
+    };
+}
+
+#[cfg(feature = "json")]
+fn parse_json(text: &str) -> Result<serde_json::Value, DeError> {
+    serde_json::from_str(text)
+        .map_err(|e| DeError::custom(format!("invalid JSON value {text:?}: {e}")))
+}
+
 /// Parse a string leaf with `FromStr` and hand the result to the visitor.
 /// Non-string nodes fall through to `deserialize_any`, which produces serde's
 /// usual "invalid type" error.
@@ -96,7 +134,7 @@ macro_rules! deserialize_parsed {
         $(
             fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
                 match self {
-                    StrNode::Str(s) => match s.trim().parse::<$ty>() {
+                    StrNode::Str(s) | StrNode::Json(s) => match s.trim().parse::<$ty>() {
                         Ok(v) => visitor.$visit(v),
                         Err(e) => Err(DeError::custom(format!(
                             "invalid value {s:?}, expected {}: {e}",
@@ -115,7 +153,7 @@ impl<'de> de::Deserializer<'de> for StrNode {
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
         match self {
-            StrNode::Str(s) => visitor.visit_string(s),
+            StrNode::Str(s) | StrNode::Json(s) => visitor.visit_string(s),
             StrNode::List(items) => {
                 let mut seq = SeqDeserializer::new(items.into_iter().map(StrNode::Str));
                 let value = visitor.visit_seq(&mut seq)?;
@@ -160,21 +198,35 @@ impl<'de> de::Deserializer<'de> for StrNode {
         visitor.visit_newtype_struct(self)
     }
 
+    #[cfg_attr(not(feature = "json"), allow(unused_variables))]
     fn deserialize_enum<V: Visitor<'de>>(
         self,
-        _name: &'static str,
-        _variants: &'static [&'static str],
+        name: &'static str,
+        variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, DeError> {
         match self {
-            StrNode::Str(s) => visitor.visit_enum(s.into_deserializer()),
+            // An enum with data is a JSON object such as `{"Tcp": {"port": 80}}`.
+            #[cfg(feature = "json")]
+            StrNode::Json(s) if s.trim_start().starts_with('{') => {
+                de::Deserializer::deserialize_enum(parse_json(&s)?, name, variants, visitor)
+                    .map_err(DeError::custom)
+            }
+            StrNode::Str(s) | StrNode::Json(s) => visitor.visit_enum(s.into_deserializer()),
             other => other.deserialize_any(visitor),
         }
     }
 
+    deserialize_structured! {
+        deserialize_seq(),
+        deserialize_tuple(len: usize),
+        deserialize_tuple_struct(name: &'static str, len: usize),
+        deserialize_map(),
+        deserialize_struct(name: &'static str, fields: &'static [&'static str]),
+    }
+
     serde::forward_to_deserialize_any! {
-        char str string bytes byte_buf unit unit_struct seq tuple tuple_struct
-        map struct identifier ignored_any
+        char str string bytes byte_buf unit unit_struct identifier ignored_any
     }
 }
 

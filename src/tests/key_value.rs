@@ -104,3 +104,130 @@ fn parent_child_collision_resolves_to_child_regardless_of_row_order() {
         assert_eq!(app.database.port.value(), &1);
     }
 }
+
+#[cfg(feature = "json")]
+mod json_values {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+    struct Host {
+        name: String,
+        port: u16,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+    #[serde(rename_all = "lowercase")]
+    enum Transport {
+        Tcp { port: u16 },
+        Stdio,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Clone, Default, Configurable)]
+    struct Structured {
+        hosts: Vec<Host>,
+        aliases: HashMap<String, String>,
+        primary: Option<Host>,
+        transport: Option<Transport>,
+        pair: Option<(u16, String)>,
+        level: String,
+        port: u16,
+    }
+
+    fn json_source<const N: usize>(entries: [(&str, &str); N]) -> KeyValueSource {
+        KeyValueSource::new("db", entries).with_json_values()
+    }
+
+    #[test]
+    fn lists_maps_and_structs_are_parsed_as_json() {
+        let config: StructuredProv = build(json_source([
+            (
+                "hosts",
+                r#"[{"name": "a", "port": 1}, {"name": "b", "port": 2}]"#,
+            ),
+            ("aliases", r#"{"x": "y"}"#),
+            ("primary", r#"{"name": "p", "port": 3}"#),
+            ("pair", r#"[7, "seven"]"#),
+        ]))
+        .unwrap();
+
+        assert_eq!(
+            config.hosts.value(),
+            &[
+                Host {
+                    name: "a".into(),
+                    port: 1
+                },
+                Host {
+                    name: "b".into(),
+                    port: 2
+                },
+            ]
+        );
+        assert_eq!(config.aliases.value()["x"], "y");
+        assert_eq!(config.primary.value().as_ref().unwrap().name, "p");
+        assert_eq!(config.pair.value(), &Some((7, "seven".to_string())));
+        assert_eq!(config.hosts.source().category(), Category::Database);
+    }
+
+    #[test]
+    fn scalars_and_unit_variants_stay_plain_text() {
+        let config: StructuredProv = build(json_source([
+            ("level", "debug"),
+            ("port", "8080"),
+            ("transport", "stdio"),
+        ]))
+        .unwrap();
+
+        assert_eq!(config.level.value(), "debug");
+        assert_eq!(config.port.value(), &8080);
+        assert_eq!(config.transport.value(), &Some(Transport::Stdio));
+    }
+
+    #[test]
+    fn enum_variants_with_data_are_json_objects() {
+        let config: StructuredProv =
+            build(json_source([("transport", r#"{"tcp": {"port": 9000}}"#)])).unwrap();
+
+        assert_eq!(
+            config.transport.value(),
+            &Some(Transport::Tcp { port: 9000 })
+        );
+    }
+
+    #[test]
+    fn invalid_json_names_the_value() {
+        let Err(err) = build::<StructuredProv>(json_source([("hosts", "[{")])) else {
+            panic!("expected invalid JSON to fail");
+        };
+
+        assert!(err.to_string().contains("invalid JSON value"), "got: {err}");
+    }
+
+    #[test]
+    fn json_of_the_wrong_shape_is_rejected() {
+        assert!(build::<StructuredProv>(json_source([("hosts", r#"{"name": "a"}"#)])).is_err());
+        assert!(build::<StructuredProv>(json_source([("hosts", r#"[{"name": "a"}]"#)])).is_err());
+    }
+
+    #[test]
+    fn without_json_values_structured_text_is_an_error() {
+        let source = KeyValueSource::new("db", [("hosts", r#"[{"name": "a", "port": 1}]"#)]);
+
+        assert!(build::<StructuredProv>(source).is_err());
+    }
+
+    #[test]
+    fn list_keys_are_still_split() {
+        #[derive(serde::Deserialize, Clone, Default, Configurable)]
+        struct Tags {
+            tags: Vec<String>,
+        }
+        let source = json_source([("tags", "a, b")]).with_list_keys(["tags"]);
+
+        let config: TagsProv = build(source).unwrap();
+
+        assert_eq!(config.tags.value(), &["a", "b"]);
+    }
+}
