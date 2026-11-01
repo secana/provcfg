@@ -131,6 +131,26 @@ let cfg = Config::new()
     .unwrap();
 ```
 
+## Database sources
+
+The `provcfg-sea-orm` crate reads settings from SQLite or PostgreSQL through
+[SeaORM](https://www.sea-ql.org/SeaORM/). Settings live in a key/value table,
+`provcfg_settings` (`namespace`, dotted `key`, text `value`), created by the
+migrations in `provcfg_sea_orm::migration::migrations()`. `load` turns one
+namespace into a `KeyValueSource`:
+
+```rust
+let cfg = Config::new()
+    .add_toml_file("app.toml")?
+    .add_source(provcfg_sea_orm::load(&db, "billing").await?)
+    .add_env("APP")
+    .build::<SettingsProv>()?;
+```
+
+Enable the `sqlite` and/or `postgres` feature of `provcfg-sea-orm`. It selects
+no async runtime or TLS backend; enable one (for example `runtime-tokio-rustls`)
+on your own `sea-orm` dependency.
+
 ## Custom sources
 
 To support a format the built-ins don't cover (XML, a secret store), implement
