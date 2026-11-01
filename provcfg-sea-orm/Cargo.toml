@@ -34,4 +34,9 @@ watch = ["dep:tokio"]
 provcfg = { path = "..", features = ["json", "live"] }
 sea-orm = { version = "2.0.4", default-features = false, features = ["macros", "runtime-tokio-rustls"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[[example]]
+name = "live_settings"
+required-features = ["sqlite", "postgres", "watch"]
