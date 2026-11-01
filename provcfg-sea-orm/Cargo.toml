@@ -14,11 +14,12 @@ authors.workspace = true
 all-features = true
 
 [dependencies]
-provcfg = { path = "..", version = "0.1.2", default-features = false }
+provcfg = { path = "..", version = "0.1.2", default-features = false, features = ["live"] }
 # No runtime or TLS feature on purpose: the application enables one (for
 # example `runtime-tokio-rustls`) on its own sea-orm dependency.
 sea-orm = { version = "2.0.4", default-features = false, features = ["macros"] }
 sea-orm-migration = { version = "2.0.4", default-features = false }
+thiserror = "2"
 
 [features]
 default = []
@@ -27,7 +28,7 @@ postgres = ["sea-orm/sqlx-postgres", "sea-orm-migration/sqlx-postgres"]
 
 [dev-dependencies]
 # `version` omitted on purpose: see the matching note in the root `Cargo.toml`.
-provcfg = { path = ".." }
+provcfg = { path = "..", features = ["json", "live"] }
 sea-orm = { version = "2.0.4", default-features = false, features = ["macros", "runtime-tokio-rustls"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
