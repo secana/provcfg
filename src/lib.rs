@@ -45,11 +45,15 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
+#[cfg(feature = "live")]
+mod live;
 pub mod sources;
 
 /// Re-export so generated code can reference `provcfg::erased_serde::*`
 /// without users needing a direct dependency.
 pub use erased_serde;
+#[cfg(feature = "live")]
+pub use live::{Change, DynamicSource, LiveConfig};
 /// Re-export of the `ClapArgs` derive from the optional `provcfg-clap`
 /// integration. Enabled via the `clap-derive` feature.
 #[cfg(feature = "clap-derive")]
