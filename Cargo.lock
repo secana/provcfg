@@ -1695,7 +1695,7 @@ dependencies = [
 
 [[package]]
 name = "provcfg"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "clap",
@@ -1712,7 +1712,7 @@ dependencies = [
 
 [[package]]
 name = "provcfg-clap"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "clap",
  "provcfg",
@@ -1722,7 +1722,7 @@ dependencies = [
 
 [[package]]
 name = "provcfg-clap-macros"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1731,7 +1731,7 @@ dependencies = [
 
 [[package]]
 name = "provcfg-macros"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1740,7 +1740,7 @@ dependencies = [
 
 [[package]]
 name = "provcfg-sea-orm"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "provcfg",
  "sea-orm",
