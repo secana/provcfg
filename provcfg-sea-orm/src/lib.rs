@@ -53,9 +53,13 @@ use provcfg::sources::KeyValueSource;
 use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, QuerySelect};
 
 pub mod entity;
+mod error;
+mod live_settings;
 pub mod migration;
 
 use entity::{revision, setting};
+pub use error::Error;
+pub use live_settings::{LiveSettings, WriteOutcome};
 
 /// PostgreSQL channel the triggers notify on, with the namespace as payload.
 pub const NOTIFY_CHANNEL: &str = "provcfg_settings";
@@ -64,7 +68,8 @@ pub const NOTIFY_CHANNEL: &str = "provcfg_settings";
 /// `database:<namespace>`. Errors name the source, so the namespace shows up
 /// in a failed [`provcfg::Config::build`].
 ///
-/// Accepts any SeaORM connection, including a transaction.
+/// Accepts any SeaORM connection, including a transaction. For a config that
+/// follows database changes, use [`LiveSettings`] instead.
 ///
 /// # Errors
 ///
