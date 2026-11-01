@@ -10,6 +10,10 @@ fn category_serializes_to_lowercase_string() {
     assert_eq!(serde_json::to_string(&Category::File).unwrap(), "\"file\"");
     assert_eq!(serde_json::to_string(&Category::Env).unwrap(), "\"env\"");
     assert_eq!(serde_json::to_string(&Category::Cli).unwrap(), "\"cli\"");
+    assert_eq!(
+        serde_json::to_string(&Category::Database).unwrap(),
+        "\"database\""
+    );
 }
 
 #[test]
