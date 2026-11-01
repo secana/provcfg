@@ -56,10 +56,14 @@ pub mod entity;
 mod error;
 mod live_settings;
 pub mod migration;
+#[cfg(feature = "watch")]
+mod watch;
 
 use entity::{revision, setting};
 pub use error::Error;
 pub use live_settings::{LiveSettings, WriteOutcome};
+#[cfg(feature = "watch")]
+pub use watch::WatchOptions;
 
 /// PostgreSQL channel the triggers notify on, with the namespace as payload.
 pub const NOTIFY_CHANNEL: &str = "provcfg_settings";

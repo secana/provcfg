@@ -1,11 +1,13 @@
 //! Backend-independent test cases. Each backend test file connects to its
 //! database and runs every case through `backend_tests!`.
 
+use std::time::Duration;
+
 use provcfg::{Category, Config, Configurable, DynamicSource};
 use provcfg_sea_orm::entity::setting;
 use provcfg_sea_orm::migration::migrations;
-use provcfg_sea_orm::{Error, LiveSettings};
-use sea_orm::{ActiveModelTrait, ConnectionTrait, DatabaseConnection, EntityTrait, Set};
+use provcfg_sea_orm::{Error, LiveSettings, WatchOptions};
+use sea_orm::{ActiveModelTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, Set};
 use sea_orm_migration::SchemaManager;
 
 #[derive(Configurable, serde::Deserialize, Clone, Default)]
@@ -252,6 +254,33 @@ pub async fn every_write_bumps_the_namespace_revision(db: DatabaseConnection) {
     assert_eq!(provcfg_sea_orm::revision(&db, "other").await.unwrap(), 0);
 }
 
+/// On PostgreSQL the poll interval is far longer than the wait, so only
+/// `LISTEN/NOTIFY` can deliver the change in time.
+pub async fn watch_applies_external_changes(db: DatabaseConnection) {
+    let settings = live(&db).await;
+    let poll = match db.get_database_backend() {
+        DbBackend::Postgres => Duration::from_secs(600),
+        _ => Duration::from_millis(20),
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    settings.live().on_change(move |change| {
+        let _ = tx.send(change.changed.clone());
+    });
+    let watcher = tokio::spawn(settings.watch(WatchOptions::new().poll_interval(poll)));
+    // Give the watcher time to subscribe before the external write.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    insert(&db, "svc", "database.host", "pushed.example").await;
+    let changed = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .expect("watcher did not apply the external change in time")
+        .unwrap();
+
+    assert_eq!(changed, ["database.host"]);
+    assert_eq!(settings.load().database.host.value(), "pushed.example");
+    watcher.abort();
+}
+
 /// Generate one `#[tokio::test]` per shared case. `$connect` takes the test
 /// name (backends may use it to isolate tests) and returns a connection, or
 /// `None` to skip.
@@ -275,6 +304,7 @@ macro_rules! backend_tests {
             refresh_picks_up_external_changes,
             refresh_with_invalid_external_data_keeps_the_config,
             every_write_bumps_the_namespace_revision,
+            watch_applies_external_changes,
         );
     };
     ($connect:path; $($case:ident),* $(,)?) => {
