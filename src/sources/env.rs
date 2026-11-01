@@ -5,8 +5,10 @@ use crate::{Category, Source};
 
 /// Reads configuration values from process environment variables.
 ///
-/// All variables starting with `<prefix>_` are collected into a tree that is
-/// then handed to serde for deserialization. Each `__` in the remainder of the
+/// All variables starting with `<prefix>_` are read once, when the source is
+/// created, so later changes to the process environment never reach the
+/// config, not even when it is built again. They are
+/// collected into a tree that is then handed to serde for deserialization. Each `__` in the remainder of the
 /// variable name introduces a nested level; the resulting segments are
 /// lowercased to match partial-struct field names.
 ///
@@ -58,18 +60,29 @@ use crate::{Category, Source};
 /// ```
 pub struct EnvSource {
     name: String,
-    /// Pre-joined `"<prefix>_"` so we don't reformat it for every env var.
-    prefix_with_sep: String,
+    /// `(name without "<prefix>_", value)`, sorted by the full variable name
+    /// so variables that lowercase to the same path resolve deterministically:
+    /// the later name wins.
+    vars: Vec<(String, String)>,
     list_keys: HashSet<String>,
 }
 
 impl EnvSource {
     /// Create an environment source. `name` is a human-readable label used in
-    /// error messages; only variables starting with `<prefix>_` are read.
+    /// error messages; only variables starting with `<prefix>_` are read, and
+    /// only now.
     pub fn new(name: impl Into<String>, prefix: impl AsRef<str>) -> Self {
+        let prefix_with_sep = format!("{}_", prefix.as_ref());
+        let mut vars: Vec<(String, String)> = std::env::vars()
+            .filter_map(|(key, value)| {
+                let rest = key.strip_prefix(&prefix_with_sep)?;
+                Some((rest.to_string(), value))
+            })
+            .collect();
+        vars.sort_by(|a, b| a.0.cmp(&b.0));
         Self {
             name: name.into(),
-            prefix_with_sep: format!("{}_", prefix.as_ref()),
+            vars,
             list_keys: HashSet::new(),
         }
     }
@@ -109,18 +122,12 @@ impl Source for EnvSource {
             &mut dyn erased_serde::Deserializer<'de>,
         ) -> Result<(), erased_serde::Error>,
     ) -> Result<(), erased_serde::Error> {
-        // Sort by env var name so variables that lowercase to the same path
-        // resolve deterministically: the later name wins.
-        let mut vars: Vec<(String, String)> = std::env::vars()
-            .filter(|(k, _)| k.starts_with(&self.prefix_with_sep))
-            .collect();
-        vars.sort_by(|a, b| a.0.cmp(&b.0));
-
-        let entries = vars
-            .into_iter()
-            .map(|(key, value)| {
-                let rest = &key[self.prefix_with_sep.len()..];
-                (rest.split("__").map(str::to_lowercase).collect(), value)
+        let entries = self
+            .vars
+            .iter()
+            .map(|(rest, value)| {
+                let segments = rest.split("__").map(str::to_lowercase).collect();
+                (segments, value.clone())
             })
             .collect();
         StrNode::from_entries(entries, &self.list_keys).feed(seed)

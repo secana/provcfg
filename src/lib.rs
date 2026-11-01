@@ -525,7 +525,8 @@ impl Config {
     }
 
     /// Add an environment-variable source reading `<PREFIX>_*` variables.
-    /// Nested fields use `__` as the separator.
+    /// Nested fields use `__` as the separator. The variables are read now,
+    /// not when the config is built.
     ///
     /// ```
     /// # use provcfg::{Category, Config, Configurable};
