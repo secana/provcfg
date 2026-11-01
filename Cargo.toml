@@ -1,5 +1,5 @@
 [workspace]
-members = ["provcfg-macros", "provcfg-clap", "provcfg-clap-macros"]
+members = ["provcfg-macros", "provcfg-clap", "provcfg-clap-macros", "provcfg-sea-orm"]
 
 [workspace.package]
 version = "0.1.2"

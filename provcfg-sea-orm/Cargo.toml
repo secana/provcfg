@@ -1,0 +1,33 @@
+[package]
+name = "provcfg-sea-orm"
+description = "SQLite and PostgreSQL config sources for provcfg, built on SeaORM."
+documentation = "https://docs.rs/provcfg-sea-orm"
+keywords = ["config", "provenance", "sea-orm", "database"]
+rust-version = "1.99.1"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+provcfg = { path = "..", version = "0.1.2", default-features = false }
+# No runtime or TLS feature on purpose: the application enables one (for
+# example `runtime-tokio-rustls`) on its own sea-orm dependency.
+sea-orm = { version = "2.0.4", default-features = false, features = ["macros"] }
+sea-orm-migration = { version = "2.0.4", default-features = false }
+
+[features]
+default = []
+sqlite = ["sea-orm/sqlx-sqlite", "sea-orm-migration/sqlx-sqlite"]
+postgres = ["sea-orm/sqlx-postgres", "sea-orm-migration/sqlx-postgres"]
+
+[dev-dependencies]
+# `version` omitted on purpose: see the matching note in the root `Cargo.toml`.
+provcfg = { path = ".." }
+sea-orm = { version = "2.0.4", default-features = false, features = ["macros", "runtime-tokio-rustls"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
