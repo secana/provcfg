@@ -3,16 +3,21 @@
 //!
 //! Settings live in one key/value table, `provcfg_settings`, with one row per
 //! leaf: a `namespace` (so several services can share the table), a dotted
-//! `key` such as `database.port`, and a text `value`. Values are converted to
-//! the field type like environment variables.
+//! `key` such as `database.port`, and a text `value`. Scalars and strings are
+//! stored as they are and converted to the field type like environment
+//! variables; lists, maps, structs and enums with data are stored as JSON.
 //!
 //! - [`load`] reads one namespace into a [`KeyValueSource`] for a config that
 //!   is built once.
 //! - [`LiveSettings`] keeps a [`provcfg::LiveConfig`] in sync with the
 //!   database: [`refresh`](LiveSettings::refresh) re-reads it,
-//!   [`set`](LiveSettings::set) and [`unset`](LiveSettings::unset) write it
-//!   (validated first), and [`watch`](LiveSettings::watch) applies changes made
-//!   by other instances or by hand, without a restart.
+//!   [`set`](LiveSettings::set), [`set_value`](LiveSettings::set_value),
+//!   [`unset`](LiveSettings::unset) and [`batch`](LiveSettings::batch) write
+//!   it (validated first, optionally against an expected revision), and
+//!   [`watch`](LiveSettings::watch) applies changes made by other instances or
+//!   by hand, without a restart.
+//! - [`LiveSettings::builder`] adds a validator for the whole config and limits
+//!   the keys the database may set.
 //!
 //! Files, environment variables and CLI arguments keep their values and their
 //! priority; only the database layer changes at runtime.
@@ -93,7 +98,7 @@ mod watch;
 
 use entity::{revision, setting};
 pub use error::Error;
-pub use live_settings::{LiveSettings, WriteOutcome};
+pub use live_settings::{Batch, LiveSettings, LiveSettingsBuilder, WriteOutcome};
 #[cfg(feature = "watch")]
 pub use watch::WatchOptions;
 
@@ -113,7 +118,17 @@ pub const NOTIFY_CHANNEL: &str = "provcfg_settings";
 /// exist.
 pub async fn load<C: ConnectionTrait>(db: &C, namespace: &str) -> Result<KeyValueSource, DbErr> {
     let rows = load_rows(db, namespace).await?;
-    Ok(KeyValueSource::new(source_name(namespace), rows))
+    Ok(key_value_source(namespace, rows))
+}
+
+/// The database layer of `namespace`, with JSON for structured values.
+fn key_value_source<I, K, V>(namespace: &str, rows: I) -> KeyValueSource
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: Into<String>,
+    V: Into<String>,
+{
+    KeyValueSource::new(source_name(namespace), rows).with_json_values()
 }
 
 /// The change counter of `namespace`: bumped by a trigger on every insert,

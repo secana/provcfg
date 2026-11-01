@@ -131,6 +131,11 @@ let cfg = Config::new()
     .unwrap();
 ```
 
+With the `json` feature, `with_json_values()` lets one entry hold a list, map,
+struct or enum with data as JSON, such as `hosts = [{"name": "a"}]` for a
+`Vec<Host>`. Scalars and strings stay plain text. `EnvSource` has the same
+option, for `APP_HOSTS='[{"name": "a"}]'`.
+
 ## Database sources
 
 The `provcfg-sea-orm` crate reads settings from SQLite or PostgreSQL through
@@ -166,15 +171,40 @@ let settings = LiveSettings::<SettingsProv>::new(db, "billing", |rows| {
 tokio::spawn(settings.watch(WatchOptions::new()));
 
 let outcome = settings.set("log_level", "debug").await?; // validated, stored, applied
-if let Some(category) = outcome.hidden_by {
-    println!("stored, but {} still overrides it", category.as_str());
+for (path, category) in outcome.hidden {
+    println!("{path} stored, but {} still overrides it", category.as_str());
 }
 let level = settings.load().log_level.value().clone();
 ```
 
-`set` rejects unknown paths and values that do not convert to the field type,
-and reports when env or CLI still override the written value. Values are stored
-as plain text, secrets included.
+Writes reject unknown paths and values that do not convert to the field type,
+and report when env or CLI still override the written value. Strings and
+numbers are stored as plain text, lists, maps and structs as JSON
+(`set_value(path, &value)` serializes them), secrets included.
+
+`LiveSettings::builder` adds rules for the whole config and limits what the
+database may set. A batch writes several keys in one transaction, optionally
+only if nobody changed the namespace since it was read:
+
+```rust
+let settings = LiveSettings::<SettingsProv>::builder(db, "billing")
+    .read_only(["database", "listen"])        // needed before the database, or at startup only
+    .validator(|config| check_unique_names(config)) // runs on every write, refresh and watch
+    .build(|rows| Ok(Config::new().add_toml_file("app.toml")?.add_source(rows).add_env("APP")))
+    .await?;
+
+let revision = settings.revision(); // e.g. sent with a settings form
+settings
+    .batch()
+    .set_value("hosts", &hosts)
+    .unset("log_level")
+    .expect_revision(revision)       // Error::Conflict if the namespace changed meanwhile
+    .commit()
+    .await?;
+```
+
+A write that fails any check stores nothing. Rows changed by other means that
+fail them are not applied; the previous config stays current.
 
 ## Live reloading
 
@@ -205,6 +235,11 @@ let port = *live.load().port.value();
   they were added, and keep their priority. A database change that env or CLI
   overrides is recorded in `history()` but not reported as a change.
 - A reload that fails to deserialize leaves the previous config in place.
+- `LiveConfig::with_validator` checks every build with a function on the whole
+  config; a rejected reload also keeps the previous config.
+- `LiveConfig::preview(&dynamic, data)` builds the config as a replacement of
+  `dynamic` would make it, without changing anything, to check data before it
+  is stored.
 
 ## Custom sources
 
@@ -260,7 +295,7 @@ Only `env` is enabled by default; opt into the file and CLI sources you need.
 | Feature       | Enables                            | Extra dependency         |
 |---------------|------------------------------------|--------------------------|
 | `env`         | `EnvSource` / `add_env` (default)  | none                     |
-| `json`        | `JsonStr` / `add_json_*`           | `serde_json`             |
+| `json`        | `JsonStr` / `add_json_*`, JSON values in key/value and env sources | `serde_json` |
 | `toml`        | `TomlStr` / `add_toml_*`           | `toml`                   |
 | `cli`         | `CliSource` / `add_cli`            | `serde_json`             |
 | `live`        | `LiveConfig` / `DynamicSource`     | `arc-swap`, `serde_json` |
