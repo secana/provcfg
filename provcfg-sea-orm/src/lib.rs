@@ -55,7 +55,10 @@ use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, Que
 pub mod entity;
 pub mod migration;
 
-use entity::setting;
+use entity::{revision, setting};
+
+/// PostgreSQL channel the triggers notify on, with the namespace as payload.
+pub const NOTIFY_CHANNEL: &str = "provcfg_settings";
 
 /// Read every row of `namespace` into a [`KeyValueSource`] named
 /// `database:<namespace>`. Errors name the source, so the namespace shows up
@@ -68,12 +71,37 @@ use entity::setting;
 /// Returns the [`DbErr`] of the query, for example when the table does not
 /// exist.
 pub async fn load<C: ConnectionTrait>(db: &C, namespace: &str) -> Result<KeyValueSource, DbErr> {
-    let rows: Vec<(String, String)> = setting::Entity::find()
+    let rows = load_rows(db, namespace).await?;
+    Ok(KeyValueSource::new(source_name(namespace), rows))
+}
+
+/// The change counter of `namespace`: bumped by a trigger on every insert,
+/// update or delete of one of its rows, `0` if it never changed.
+///
+/// # Errors
+///
+/// Returns the [`DbErr`] of the query, for example when the
+/// [`TrackRevisions`](migration::TrackRevisions) migration has not run.
+pub async fn revision<C: ConnectionTrait>(db: &C, namespace: &str) -> Result<i64, DbErr> {
+    let current = revision::Entity::find_by_id(namespace.to_string())
+        .one(db)
+        .await?;
+    Ok(current.map_or(0, |row| row.revision))
+}
+
+async fn load_rows<C: ConnectionTrait>(
+    db: &C,
+    namespace: &str,
+) -> Result<Vec<(String, String)>, DbErr> {
+    setting::Entity::find()
         .select_only()
         .columns([setting::Column::Key, setting::Column::Value])
         .filter(setting::Column::Namespace.eq(namespace))
         .into_tuple()
         .all(db)
-        .await?;
-    Ok(KeyValueSource::new(format!("database:{namespace}"), rows))
+        .await
+}
+
+fn source_name(namespace: &str) -> String {
+    format!("database:{namespace}")
 }

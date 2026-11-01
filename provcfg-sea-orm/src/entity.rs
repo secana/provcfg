@@ -23,3 +23,22 @@ pub mod setting {
 
     impl ActiveModelBehavior for ActiveModel {}
 }
+
+/// Change counter per namespace: the `provcfg_revisions` table. Database
+/// triggers bump it on every insert, update or delete in `provcfg_settings`.
+pub mod revision {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "provcfg_revisions")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub namespace: String,
+        pub revision: i64,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
