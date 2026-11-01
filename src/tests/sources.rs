@@ -246,6 +246,30 @@ fn env_parent_child_collision_resolves_deterministically_to_child() {
     }
 }
 
+#[cfg(feature = "env")]
+#[test]
+fn env_source_reads_the_environment_when_created() {
+    let prefix = "PROVCFG_SNAPSHOT";
+    unsafe {
+        std::env::set_var(format!("{prefix}_HOST"), "at-creation");
+    }
+
+    let config = Config::new().add_env(prefix);
+    unsafe {
+        std::env::set_var(format!("{prefix}_HOST"), "changed-later");
+        std::env::set_var(format!("{prefix}_PORT"), "1234");
+    }
+    let db = config.build::<DatabaseConfigProv>().unwrap();
+
+    assert_eq!(db.host.value(), "at-creation");
+    assert_eq!(db.port.source().category(), Category::Default);
+
+    unsafe {
+        std::env::remove_var(format!("{prefix}_HOST"));
+        std::env::remove_var(format!("{prefix}_PORT"));
+    }
+}
+
 /// Field types that exercise how raw env strings are coerced into the target
 /// type: `String` keeps the value verbatim, scalars are parsed from it.
 #[cfg(feature = "env")]
