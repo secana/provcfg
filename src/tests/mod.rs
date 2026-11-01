@@ -8,5 +8,6 @@ mod basics;
 mod defaults;
 mod fixtures;
 mod key_value;
+mod live;
 mod sources;
 mod walk_and_serialize;
