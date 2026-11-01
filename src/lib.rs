@@ -757,8 +757,12 @@ impl<T> Default for ValueHistory<T> {
     }
 }
 
+/// An error of any type, as returned by a validator.
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
 /// The error type returned by [`Config::build`] and the `add_*_file` helpers.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// A source's raw data could not be deserialized into the target struct.
     #[error("failed to deserialize source {source:?}: {error}")]
@@ -774,6 +778,10 @@ pub enum Error {
         #[source]
         error: std::io::Error,
     },
+    /// The config was built, but its validator rejected it, see
+    /// `LiveConfig::with_validator` (`live` feature).
+    #[error("config rejected by its validator")]
+    Invalid(#[source] BoxError),
 }
 
 #[cfg(test)]
