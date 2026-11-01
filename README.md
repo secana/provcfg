@@ -151,6 +151,36 @@ Enable the `sqlite` and/or `postgres` feature of `provcfg-sea-orm`. It selects
 no async runtime or TLS backend; enable one (for example `runtime-tokio-rustls`)
 on your own `sea-orm` dependency.
 
+## Live reloading
+
+With the `live` feature, `LiveConfig` rebuilds the config at runtime without a
+restart. Wrap any source whose data can change in a `DynamicSource`, keep a
+clone, and replace its data when it changes:
+
+```rust
+use provcfg::{DynamicSource, LiveConfig};
+
+let db = DynamicSource::new("settings-db", provcfg_sea_orm::load(&conn, "billing").await?);
+let live = LiveConfig::<SettingsProv>::new(
+    Config::new().add_source(db.clone()).add_env("APP"),
+)?;
+
+live.on_change(|change| println!("changed: {:?}", change.changed));
+
+// Later, when the settings table changed:
+db.replace(provcfg_sea_orm::load(&conn, "billing").await?);
+live.reload()?;
+
+let port = *live.load().port.value();
+```
+
+- `load()` returns a consistent snapshot; a reload swaps the whole config at
+  once.
+- Files, environment variables and CLI arguments keep what they captured when
+  they were added, and keep their priority. A database change that env or CLI
+  overrides is recorded in `history()` but not reported as a change.
+- A reload that fails to deserialize leaves the previous config in place.
+
 ## Custom sources
 
 To support a format the built-ins don't cover (XML, a secret store), implement
@@ -202,13 +232,14 @@ See the `Source` trait's rustdoc for the full doctested example.
 
 Only `env` is enabled by default; opt into the file and CLI sources you need.
 
-| Feature       | Enables                            | Extra dependency |
-|---------------|------------------------------------|------------------|
-| `env`         | `EnvSource` / `add_env` (default)  | none             |
-| `json`        | `JsonStr` / `add_json_*`           | `serde_json`     |
-| `toml`        | `TomlStr` / `add_toml_*`           | `toml`           |
-| `cli`         | `CliSource` / `add_cli`            | `serde_json`     |
-| `clap-derive` | `ClapArgs` derive (`provcfg-clap`) | `clap`           |
+| Feature       | Enables                            | Extra dependency         |
+|---------------|------------------------------------|--------------------------|
+| `env`         | `EnvSource` / `add_env` (default)  | none                     |
+| `json`        | `JsonStr` / `add_json_*`           | `serde_json`             |
+| `toml`        | `TomlStr` / `add_toml_*`           | `toml`                   |
+| `cli`         | `CliSource` / `add_cli`            | `serde_json`             |
+| `live`        | `LiveConfig` / `DynamicSource`     | `arc-swap`, `serde_json` |
+| `clap-derive` | `ClapArgs` derive (`provcfg-clap`) | `clap`                   |
 
 ```toml
 [dependencies]
