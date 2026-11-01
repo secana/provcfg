@@ -151,6 +151,31 @@ Enable the `sqlite` and/or `postgres` feature of `provcfg-sea-orm`. It selects
 no async runtime or TLS backend; enable one (for example `runtime-tokio-rustls`)
 on your own `sea-orm` dependency.
 
+For a config that follows the database at runtime, use `LiveSettings`. It
+places the database layer where you want it, writes values back after
+validating them, and with the `watch` feature applies changes made elsewhere
+(PostgreSQL `LISTEN/NOTIFY`, revision polling on SQLite):
+
+```rust
+use provcfg_sea_orm::{LiveSettings, WatchOptions};
+
+let settings = LiveSettings::<SettingsProv>::new(db, "billing", |rows| {
+    Ok(Config::new().add_toml_file("app.toml")?.add_source(rows).add_env("APP"))
+})
+.await?;
+tokio::spawn(settings.watch(WatchOptions::new()));
+
+let outcome = settings.set("log_level", "debug").await?; // validated, stored, applied
+if let Some(category) = outcome.hidden_by {
+    println!("stored, but {} still overrides it", category.as_str());
+}
+let level = settings.load().log_level.value().clone();
+```
+
+`set` rejects unknown paths and values that do not convert to the field type,
+and reports when env or CLI still override the written value. Values are stored
+as plain text, secrets included.
+
 ## Live reloading
 
 With the `live` feature, `LiveConfig` rebuilds the config at runtime without a
